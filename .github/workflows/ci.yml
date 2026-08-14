@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch rclone
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/fetch-rclone.sh
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Regenerate Xcode project
+        run: xcodegen generate
+
+      - name: Build
+        run: |
+          xcodebuild -project Driveflow.xcodeproj -scheme Driveflow \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath ../.derivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Test
+        run: |
+          xcodebuild -project Driveflow.xcodeproj -scheme Driveflow \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath ../.derivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            test

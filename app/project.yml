@@ -1,0 +1,104 @@
+name: Driveflow
+options:
+  bundleIdPrefix: com.aaronte
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ONLY_ACTIVE_ARCH: YES
+    ARCHS: arm64
+    VALID_ARCHS: arm64
+    CODE_SIGN_STYLE: Automatic
+    # Contributors set their Apple Development Team in Xcode (Signing & Capabilities).
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: YES
+    COMBINE_HIDPI_IMAGES: YES
+    ENABLE_TESTABILITY: YES
+targets:
+  Driveflow:
+    type: application
+    platform: macOS
+    sources:
+      - path: Driveflow
+        excludes:
+          - "Resources/**"
+    resources:
+      - path: Driveflow/Assets.xcassets
+    scheme:
+      testTargets:
+        - DriveflowTests
+    postCompileScripts:
+      - name: Copy rclone
+        script: |
+          set -euo pipefail
+          DEST="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+          mkdir -p "$DEST"
+          RCLONE_SRC="${SRCROOT}/Driveflow/Resources/rclone"
+          if [ ! -f "$RCLONE_SRC" ]; then
+            echo "error: missing $RCLONE_SRC — run ./scripts/fetch-rclone.sh from the repo root" >&2
+            exit 1
+          fi
+          # macOS 26 rejects copied linker-signed binaries carrying provenance.
+          # Replace the inode, clear xattrs, then sign the nested executable.
+          rm -f "$DEST/rclone"
+          ditto "$RCLONE_SRC" "$DEST/rclone"
+          xattr -cr "$DEST/rclone"
+          if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] && [ "${CODE_SIGNING_ALLOWED:-YES}" != "NO" ]; then
+            codesign --force --options runtime --sign "$EXPANDED_CODE_SIGN_IDENTITY" "$DEST/rclone"
+          else
+            codesign --force --sign - "$DEST/rclone"
+          fi
+          cp -f "${SRCROOT}/Driveflow/Resources/rclone.version" "$DEST/rclone.version"
+          chmod +x "$DEST/rclone"
+          # Optional Desktop OAuth JSON (gitignored) — required for Google token exchange
+          if [ -f "${SRCROOT}/Driveflow/Resources/oauth-client.json" ]; then
+            cp -f "${SRCROOT}/Driveflow/Resources/oauth-client.json" "$DEST/oauth-client.json"
+          fi
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aaronte.driveflow
+        PRODUCT_NAME: Driveflow
+        INFOPLIST_FILE: Driveflow/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../Frameworks"
+        CURRENT_PROJECT_VERSION: 18
+        MARKETING_VERSION: "0.1.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    entitlements:
+      path: Driveflow/Driveflow.entitlements
+      properties:
+        # No keychain-access-groups — that requires a provisioning profile and
+        # blocks Developer ID CLI archives. CredentialStore uses Application Support.
+        com.apple.security.app-sandbox: false
+    info:
+      path: Driveflow/Info.plist
+      properties:
+        CFBundleName: Driveflow
+        CFBundleDisplayName: Driveflow
+        CFBundleIdentifier: com.aaronte.driveflow
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "18"
+        LSMinimumSystemVersion: "14.0"
+        LSApplicationCategoryType: public.app-category.utilities
+        NSHumanReadableCopyright: Copyright © 2026 Driveflow. GPLv3.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+  DriveflowTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: DriveflowTests
+    dependencies:
+      - target: Driveflow
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.aaronte.driveflow.tests
+        MACOSX_DEPLOYMENT_TARGET: "14.0"

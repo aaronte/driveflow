@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Not sandboxed (rclone nested binary + free-form destinations). -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<!-- No keychain-access-groups: that entitlement requires a provisioning
+	     profile and blocks Developer ID CLI archives. CredentialStore keeps
+	     Application Support as the source of truth; keychain is best-effort. -->
+</dict>
+</plist>
