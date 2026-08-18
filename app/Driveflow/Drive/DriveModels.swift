@@ -53,24 +53,3 @@ struct DriveItem: Identifiable, Hashable, Sendable {
         }
     }
 }
-
-struct DriveBreadcrumb: Identifiable, Hashable, Sendable {
-    let id: String
-    let name: String
-}
-
-enum DriveRoot: String, CaseIterable, Identifiable {
-    case myDrive
-    case sharedWithMe
-    case sharedDrives
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .myDrive: return "My Drive"
-        case .sharedWithMe: return "Shared with me"
-        case .sharedDrives: return "Shared drives"
-        }
-    }
-}

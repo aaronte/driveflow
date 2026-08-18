@@ -168,7 +168,7 @@ actor RcloneEngine {
             "type": "drive",
             "parameters": [
                 "token": tokenJSON,
-                "scope": "drive.readonly",
+                "scope": AppConfig.driveScope,
                 "client_id": AppConfig.googleClientID,
                 "client_secret": AppConfig.googleClientSecret,
             ],

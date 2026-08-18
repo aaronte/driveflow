@@ -64,11 +64,11 @@ struct SignInView: View {
                         )
                     )
 
-                Text("Google Drive downloads, at the speed of your connection.")
+                Text("Pick files in Google Drive, then download them at the speed of your connection.")
                     .font(.system(size: 17, weight: .regular))
                     .foregroundStyle(DriveflowTheme.inkMuted)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 380)
+                    .frame(maxWidth: 400)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 14)
                     .modifier(
@@ -85,7 +85,7 @@ struct SignInView: View {
                     HStack(spacing: 12) {
                         GoogleMark()
                             .frame(width: 18, height: 18)
-                        Text(auth.isBusy ? "Opening Google…" : "Sign in with Google")
+                        Text(auth.isBusy ? "Opening Google Drive…" : "Sign in with Google")
                             .font(.system(size: 15, weight: .semibold))
                     }
                     .frame(width: 280)
