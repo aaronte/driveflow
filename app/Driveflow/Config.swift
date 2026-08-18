@@ -64,10 +64,15 @@ enum AppConfig {
     static let googleTokenEndpoint = URL(string: "https://oauth2.googleapis.com/token")!
     static let googleRevokeEndpoint = URL(string: "https://oauth2.googleapis.com/revoke")!
 
-    /// Drive access plus email (needed for license checks after sign-in).
-    static let oauthScopes = "openid email https://www.googleapis.com/auth/drive.readonly"
-    static let driveScope = oauthScopes
+    /// Official desktop Google Picker requires `drive.file` alone (no other scopes).
+    /// License email comes from Drive `about.get` with this same scope.
+    static let oauthScopes = "https://www.googleapis.com/auth/drive.file"
+    static let driveScope = "drive.file"
     static let driveAPIBase = URL(string: "https://www.googleapis.com/drive/v3")!
+
+    /// Keychain marker so older `drive.readonly` sessions are forced to re-consent.
+    static let authSchemeAccount = "google.authScheme"
+    static let authSchemePickerV1 = "drive.file-picker-v1"
 
     static let rcloneRCUser = "driveflow"
 

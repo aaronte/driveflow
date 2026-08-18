@@ -9,6 +9,7 @@ enum AppError: LocalizedError, Identifiable {
     case tokenExpired
     case network(String)
     case driveAPI(String)
+    case folderPickRequiresFiles
     case destinationUnavailable
     case insufficientSpace(needed: Int64, available: Int64)
     case volumeWarning(String)
@@ -39,6 +40,8 @@ enum AppError: LocalizedError, Identifiable {
             return "Network problem. \(detail)"
         case .driveAPI(let detail):
             return "Google Drive returned an error. \(detail)"
+        case .folderPickRequiresFiles:
+            return "That folder can’t be downloaded with Driveflow’s Google access. Pick the files inside the folder, not just the folder."
         case .destinationUnavailable:
             return "That destination isn’t available. Choose another folder or reconnect the drive."
         case .insufficientSpace(let needed, let available):
@@ -64,6 +67,8 @@ enum AppError: LocalizedError, Identifiable {
             return "Choose Sign in with Google to try again."
         case .network, .driveAPI:
             return "Check your connection and retry."
+        case .folderPickRequiresFiles:
+            return "Open Google’s file picker again and select the individual files you want."
         case .destinationUnavailable, .insufficientSpace, .volumeWarning:
             return "Pick a different destination volume."
         case .rcloneMissing:

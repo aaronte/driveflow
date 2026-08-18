@@ -7,6 +7,8 @@ final class AuthSession: NSObject, ObservableObject {
     @Published private(set) var isSignedIn = false
     @Published private(set) var userEmail: String?
     @Published private(set) var isBusy = false
+    /// File IDs returned by the most recent Google desktop Picker redirect.
+    @Published private(set) var lastPickedFileIDs: [String] = []
     @Published var lastError: AppError?
 
     private let accessAccount = "google.access"
@@ -30,6 +32,13 @@ final class AuthSession: NSObject, ObservableObject {
     }
 
     func restoreSession() async {
+        let scheme = try? CredentialStore.get(account: AppConfig.authSchemeAccount)
+        guard scheme == AppConfig.authSchemePickerV1 else {
+            // Drop legacy `drive.readonly` (or unknown) sessions — picker requires re-consent.
+            clearTokens()
+            isSignedIn = false
+            return
+        }
         guard let refresh = try? CredentialStore.get(account: refreshAccount), !refresh.isEmpty else {
             isSignedIn = false
             return
@@ -65,59 +74,14 @@ final class AuthSession: NSObject, ObservableObject {
         }
 
         isBusy = true
-        let server = LoopbackAuthServer()
-        activeAuthServer = server
-        defer {
-            server.stop()
-            activeAuthServer = nil
-            isBusy = false
-        }
+        defer { isBusy = false }
 
         do {
-            let port = try await server.start()
-            let redirectURI = AppConfig.redirectURI(port: port)
-            let pkce = PKCE.generate()
-            let state = UUID().uuidString
-
-            var components = URLComponents(url: AppConfig.googleAuthEndpoint, resolvingAgainstBaseURL: false)!
-            components.queryItems = [
-                URLQueryItem(name: "client_id", value: AppConfig.googleClientID),
-                URLQueryItem(name: "redirect_uri", value: redirectURI),
-                URLQueryItem(name: "response_type", value: "code"),
-                URLQueryItem(name: "scope", value: AppConfig.oauthScopes),
-                URLQueryItem(name: "access_type", value: "offline"),
-                URLQueryItem(name: "prompt", value: "consent"),
-                URLQueryItem(name: "code_challenge", value: pkce.challenge),
-                URLQueryItem(name: "code_challenge_method", value: "S256"),
-                URLQueryItem(name: "state", value: state),
-            ]
-
-            guard let authURL = components.url else {
-                throw AppError.authFailed("Invalid authorization URL.")
-            }
-
-            guard NSWorkspace.shared.open(authURL) else {
-                throw AppError.authFailed("Couldn’t open your browser for sign-in.")
-            }
-
-            let params = try await waitForSignInCallback(on: server)
-
-            if let err = params["error"] {
-                if err == "access_denied" {
-                    throw AppError.authCancelled
-                }
-                throw AppError.authFailed(err)
-            }
-            guard params["state"] == state else {
-                throw AppError.authFailed("Sign-in response didn’t match this request. Try signing in again.")
-            }
-            guard let code = params["code"] else {
-                throw AppError.authFailed("Missing authorization code.")
-            }
-
-            try await exchangeCode(code, verifier: pkce.verifier, redirectURI: redirectURI)
-            try await fetchUserInfo()
+            let pickedIDs = try await runDesktopPickerAuth()
+            lastPickedFileIDs = pickedIDs
+            try await fetchUserEmailFromDriveAbout()
             try await enforcePaidLicenseIfNeeded()
+            try CredentialStore.set(AppConfig.authSchemePickerV1, account: AppConfig.authSchemeAccount)
             isSignedIn = true
         } catch let error as AppError {
             // Cancel / timeout shouldn't look like a hard failure unless user cares.
@@ -137,9 +101,93 @@ final class AuthSession: NSObject, ObservableObject {
         }
     }
 
+    /// Opens Google’s desktop Picker again so the user can grant more files this session.
+    func pickAdditionalFiles() async throws -> [String] {
+        lastError = nil
+        guard isSignedIn else {
+            throw AppError.authFailed("Sign in before choosing files from Google Drive.")
+        }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let pickedIDs = try await runDesktopPickerAuth()
+            lastPickedFileIDs = pickedIDs
+            return pickedIDs
+        } catch let error as AppError {
+            if case .authCancelled = error {
+                lastError = nil
+            } else {
+                lastError = error
+            }
+            throw error
+        } catch {
+            let wrapped = AppError.authFailed(error.localizedDescription)
+            lastError = wrapped
+            throw wrapped
+        }
+    }
+
     /// Aborts an in-flight browser sign-in and returns the UI to idle.
     func cancelSignIn() {
         activeAuthServer?.stop()
+    }
+
+    /// Official desktop Picker OAuth: `drive.file` only + `trigger_onepick`.
+    private func runDesktopPickerAuth() async throws -> [String] {
+        let server = LoopbackAuthServer()
+        activeAuthServer = server
+        defer {
+            server.stop()
+            activeAuthServer = nil
+        }
+
+        let port = try await server.start()
+        let redirectURI = AppConfig.redirectURI(port: port)
+        let pkce = PKCE.generate()
+        let state = UUID().uuidString
+
+        var components = URLComponents(url: AppConfig.googleAuthEndpoint, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "client_id", value: AppConfig.googleClientID),
+            URLQueryItem(name: "redirect_uri", value: redirectURI),
+            URLQueryItem(name: "response_type", value: "code"),
+            // Desktop Picker forbids combining drive.file with any other scope.
+            URLQueryItem(name: "scope", value: AppConfig.oauthScopes),
+            URLQueryItem(name: "access_type", value: "offline"),
+            URLQueryItem(name: "prompt", value: "consent"),
+            URLQueryItem(name: "trigger_onepick", value: "true"),
+            URLQueryItem(name: "allow_multiple", value: "true"),
+            URLQueryItem(name: "allow_folder_selection", value: "true"),
+            URLQueryItem(name: "code_challenge", value: pkce.challenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "state", value: state),
+        ]
+
+        guard let authURL = components.url else {
+            throw AppError.authFailed("Invalid authorization URL.")
+        }
+
+        guard NSWorkspace.shared.open(authURL) else {
+            throw AppError.authFailed("Couldn’t open your browser for Google Drive.")
+        }
+
+        let params = try await waitForSignInCallback(on: server)
+
+        if let err = params["error"] {
+            if err == "access_denied" {
+                throw AppError.authCancelled
+            }
+            throw AppError.authFailed(err)
+        }
+        guard params["state"] == state else {
+            throw AppError.authFailed("Sign-in response didn’t match this request. Try signing in again.")
+        }
+        guard let code = params["code"] else {
+            throw AppError.authFailed("Missing authorization code.")
+        }
+
+        try await exchangeCode(code, verifier: pkce.verifier, redirectURI: redirectURI)
+        return Self.parsePickedFileIDs(params["picked_file_ids"])
     }
 
     private func waitForSignInCallback(on server: LoopbackAuthServer) async throws -> [String: String] {
@@ -167,6 +215,7 @@ final class AuthSession: NSObject, ObservableObject {
         clearTokens()
         isSignedIn = false
         userEmail = nil
+        lastPickedFileIDs = []
         if let tokenToRevoke, !tokenToRevoke.isEmpty {
             Task { await Self.revokeGoogleGrant(token: tokenToRevoke) }
         }
@@ -269,9 +318,17 @@ final class AuthSession: NSObject, ObservableObject {
         try CredentialStore.set(String(expiry), account: expiryAccount)
     }
 
-    private func fetchUserInfo() async throws {
+    /// Email via Drive `about.get` — allowed with `drive.file`, no openid/email scopes.
+    private func fetchUserEmailFromDriveAbout() async throws {
         let token = try await validAccessToken()
-        var request = URLRequest(url: URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!)
+        var components = URLComponents(
+            url: AppConfig.driveAPIBase.appendingPathComponent("about"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "fields", value: "user(emailAddress)"),
+        ]
+        var request = URLRequest(url: components.url!)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
@@ -279,7 +336,8 @@ final class AuthSession: NSObject, ObservableObject {
             throw AppError.authFailed("Couldn’t read your Google account email. \(detail)")
         }
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        guard let email = (json["email"] as? String)?
+        let user = json["user"] as? [String: Any] ?? [:]
+        guard let email = (user["emailAddress"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !email.isEmpty
         else {
@@ -313,6 +371,7 @@ final class AuthSession: NSObject, ObservableObject {
         CredentialStore.delete(account: refreshAccount)
         CredentialStore.delete(account: emailAccount)
         CredentialStore.delete(account: expiryAccount)
+        CredentialStore.delete(account: AppConfig.authSchemeAccount)
     }
 
     /// Best-effort remote revoke; local sign-out must not fail if offline.
@@ -328,6 +387,14 @@ final class AuthSession: NSObject, ObservableObject {
         ) ?? token
         request.httpBody = Data("token=\(encoded)".utf8)
         _ = try? await URLSession.shared.data(for: request)
+    }
+
+    static func parsePickedFileIDs(_ raw: String?) -> [String] {
+        guard let raw, !raw.isEmpty else { return [] }
+        return raw
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     private func formEncode(_ fields: [String: String]) -> String {

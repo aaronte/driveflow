@@ -2,7 +2,7 @@
 
 Google Drive downloads, at the speed of your connection.
 
-A native SwiftUI Mac app (Apple Silicon, macOS 14+) that browses Google Drive and downloads files or folders without Chrome’s split-ZIP flow. Transfers use a bundled [rclone](https://rclone.org) engine for multi-threaded downloads, progress, pause/resume, and skip-existing.
+A native SwiftUI Mac app (Apple Silicon, macOS 14+) that uses Google’s official desktop file picker (`drive.file`) and downloads the files you grant — without Chrome’s split-ZIP flow. Transfers use a bundled [rclone](https://rclone.org) engine for multi-threaded downloads, progress, pause/resume, and skip-existing.
 
 A signed build is at [usedriveflow.app](https://usedriveflow.app).
 
@@ -18,12 +18,12 @@ You need macOS 14+, Apple Silicon, Xcode 15+, and a Google Cloud **Desktop** OAu
 
 ### 2. Add a Google OAuth client
 
-1. In Google Cloud, enable the **Drive API**.
-2. OAuth consent screen → External → Testing → scope `https://www.googleapis.com/auth/drive.readonly`.
+1. In Google Cloud, enable the **Drive API** (and **Google Picker API** if prompted).
+2. OAuth consent screen → External → Testing → scope `https://www.googleapis.com/auth/drive.file` only (non-sensitive; no CASA).
 3. Create an OAuth client of type **Desktop**.
 4. While the app is in Testing, add yourself as a test user.
 
-Sign-in uses a loopback redirect (`http://127.0.0.1:<port>`), not a custom URL scheme.
+Sign-in uses Google’s [desktop Picker](https://developers.google.com/workspace/drive/picker/guides/overview-desktop) (`prompt=consent`, `trigger_onepick=true`) with a loopback redirect (`http://127.0.0.1:<port>`). The app does **not** request `drive.readonly` or browse My Drive in-app.
 
 Then either:
 

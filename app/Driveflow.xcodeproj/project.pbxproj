@@ -23,6 +23,7 @@
 		7D0A69EE8486C9AF17BCFBD6 /* AppError.swift in Sources */ = {isa = PBXBuildFile; fileRef = E33F719DDB4896F9F54FFF84 /* AppError.swift */; };
 		8120DA9636D4999500A70D12 /* CredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2277E2CD48EC85025F640805 /* CredentialStore.swift */; };
 		84784E80A63F7308DF30769C /* QueueDecodeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4CC2FC7AC8DF10B2C27937E /* QueueDecodeTests.swift */; };
+		C2D3E4F5A60718293A4B5C6D /* PickerAuthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A60718293A4B5C /* PickerAuthTests.swift */; };
 		8620D8A3108EF0EC7F38A079 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40E0955FF6F2F01215DA0D3C /* Theme.swift */; };
 		980EEAAB73727649B082A1BA /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CE09727A6680F788E5EF606 /* ContentView.swift */; };
 		B83A31D28489F05ABC9F2D02 /* DriveClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4278B00C5BB24B57E50209D /* DriveClient.swift */; };
@@ -68,6 +69,7 @@
 		83C896032C37AB288B865E2A /* DriveBrowserModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveBrowserModel.swift; sourceTree = "<group>"; };
 		9792E46FE45BAA8D604EFAA6 /* FileNameTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileNameTests.swift; sourceTree = "<group>"; };
 		A4CC2FC7AC8DF10B2C27937E /* QueueDecodeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueDecodeTests.swift; sourceTree = "<group>"; };
+		B1C2D3E4F5A60718293A4B5C /* PickerAuthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PickerAuthTests.swift; sourceTree = "<group>"; };
 		B049BB49B2EB5738F3849938 /* DestinationPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DestinationPicker.swift; sourceTree = "<group>"; };
 		BE4BE8EA45D012797CF8EF06 /* DownloadJob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadJob.swift; sourceTree = "<group>"; };
 		D4278B00C5BB24B57E50209D /* DriveClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveClient.swift; sourceTree = "<group>"; };
@@ -172,6 +174,7 @@
 			children = (
 				9792E46FE45BAA8D604EFAA6 /* FileNameTests.swift */,
 				A4CC2FC7AC8DF10B2C27937E /* QueueDecodeTests.swift */,
+				B1C2D3E4F5A60718293A4B5C /* PickerAuthTests.swift */,
 			);
 			path = DriveflowTests;
 			sourceTree = "<group>";
@@ -336,6 +339,7 @@
 			files = (
 				6D8DDA5A9A8946AEB03F6DD1 /* FileNameTests.swift in Sources */,
 				84784E80A63F7308DF30769C /* QueueDecodeTests.swift in Sources */,
+				C2D3E4F5A60718293A4B5C6D /* PickerAuthTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

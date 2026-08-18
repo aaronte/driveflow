@@ -1,22 +1,21 @@
 import Foundation
 import SwiftUI
 
+/// Session list of files the user granted through Google’s desktop Picker.
+/// Does not browse My Drive / Shared with me.
 @MainActor
 final class DriveBrowserModel: ObservableObject {
-    @Published var root: DriveRoot = .myDrive
-    @Published private(set) var breadcrumbs: [DriveBreadcrumb] = [DriveBreadcrumb(id: "root", name: "My Drive")]
     @Published private(set) var items: [DriveItem] = []
     @Published private(set) var isLoading = false
-    @Published private(set) var isLoadingMore = false
+    @Published private(set) var isPicking = false
     @Published var selectedIDs: Set<String> = []
-    @Published var searchText = ""
     @Published var lastError: AppError?
 
+    private let auth: AuthSession
     private let client: DriveClient
-    private var nextPageToken: String?
-    private var searchTask: Task<Void, Never>?
 
-    init(client: DriveClient) {
+    init(auth: AuthSession, client: DriveClient) {
+        self.auth = auth
         self.client = client
     }
 
@@ -24,67 +23,57 @@ final class DriveBrowserModel: ObservableObject {
         items.filter { selectedIDs.contains($0.id) }
     }
 
+    /// After sign-in, load metadata for file IDs returned by the Picker redirect.
     func bootstrap() async {
-        breadcrumbs = [DriveBreadcrumb(id: "root", name: root.title)]
-        await reload()
+        let ids = auth.lastPickedFileIDs
+        guard !ids.isEmpty else { return }
+        await ingestPickedFileIDs(ids, selectNew: true)
     }
 
-    func switchRoot(_ newRoot: DriveRoot) async {
-        root = newRoot
-        selectedIDs.removeAll()
-        breadcrumbs = [DriveBreadcrumb(id: "root", name: newRoot.title)]
-        await reload()
+    func chooseFromGoogleDrive() async {
+        lastError = nil
+        isPicking = true
+        defer { isPicking = false }
+        do {
+            let ids = try await auth.pickAdditionalFiles()
+            guard !ids.isEmpty else { return }
+            await ingestPickedFileIDs(ids, selectNew: true)
+        } catch let error as AppError {
+            if case .authCancelled = error { return }
+            lastError = error
+        } catch {
+            lastError = .authFailed(error.localizedDescription)
+        }
     }
 
-    func reload() async {
+    func ingestPickedFileIDs(_ ids: [String], selectNew: Bool) async {
+        let unique = Array(Set(ids)).filter { id in !items.contains(where: { $0.id == id }) }
+        guard !unique.isEmpty else {
+            // Re-picked files already in the list — select them.
+            if selectNew {
+                for id in ids where items.contains(where: { $0.id == id }) {
+                    selectedIDs.insert(id)
+                }
+            }
+            return
+        }
         isLoading = true
         lastError = nil
-        nextPageToken = nil
         defer { isLoading = false }
         do {
-            let parent = breadcrumbs.count > 1 ? breadcrumbs.last?.id : nil
-            let result = try await client.list(parentID: parent == "root" ? nil : parent, root: root)
-            items = result.items
-            nextPageToken = result.nextPageToken
+            let fetched = try await client.files(ids: unique)
+            items.append(contentsOf: fetched)
+            items.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            if selectNew {
+                for item in fetched {
+                    selectedIDs.insert(item.id)
+                }
+            }
         } catch let error as AppError {
             lastError = error
-            items = []
         } catch {
             lastError = .driveAPI(error.localizedDescription)
-            items = []
         }
-    }
-
-    func loadMoreIfNeeded(current item: DriveItem) async {
-        guard let nextPageToken, !isLoadingMore, items.last?.id == item.id else { return }
-        isLoadingMore = true
-        defer { isLoadingMore = false }
-        do {
-            let parent = breadcrumbs.count > 1 ? breadcrumbs.last?.id : nil
-            let result = try await client.list(
-                parentID: parent == "root" ? nil : parent,
-                root: root,
-                pageToken: nextPageToken
-            )
-            items.append(contentsOf: result.items)
-            self.nextPageToken = result.nextPageToken
-        } catch {
-            // Soft-fail pagination
-        }
-    }
-
-    func open(_ item: DriveItem) async {
-        guard item.isFolder else { return }
-        selectedIDs.removeAll()
-        breadcrumbs.append(DriveBreadcrumb(id: item.id, name: item.name))
-        await reload()
-    }
-
-    func goToBreadcrumb(_ crumb: DriveBreadcrumb) async {
-        guard let index = breadcrumbs.firstIndex(of: crumb) else { return }
-        breadcrumbs = Array(breadcrumbs.prefix(index + 1))
-        selectedIDs.removeAll()
-        await reload()
     }
 
     func toggleSelection(_ item: DriveItem) {
@@ -99,34 +88,17 @@ final class DriveBrowserModel: ObservableObject {
         selectedIDs.removeAll()
     }
 
+    func removeFromSession(_ item: DriveItem) {
+        items.removeAll { $0.id == item.id }
+        selectedIDs.remove(item.id)
+    }
+
     /// Drop listings/selection so a later account can't briefly see the previous one.
     func resetForSignOut() {
         selectedIDs.removeAll()
         items = []
-        searchText = ""
-        nextPageToken = nil
         lastError = nil
-        breadcrumbs = [DriveBreadcrumb(id: "root", name: root.title)]
-    }
-
-    func runSearch() {
-        searchTask?.cancel()
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
-            Task { await reload() }
-            return
-        }
-        searchTask = Task {
-            isLoading = true
-            defer { isLoading = false }
-            do {
-                items = try await client.search(query: query)
-                nextPageToken = nil
-            } catch let error as AppError {
-                lastError = error
-            } catch {
-                lastError = .driveAPI(error.localizedDescription)
-            }
-        }
+        isLoading = false
+        isPicking = false
     }
 }

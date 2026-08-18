@@ -40,17 +40,20 @@ struct BrowserView: View {
             }
             .padding(.top, 8)
 
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(DriveRoot.allCases) { root in
-                    Button {
-                        Task { await browser.switchRoot(root) }
-                    } label: {
-                        Text(root.title)
-                            .font(.system(size: 13, weight: browser.root == root ? .semibold : .regular))
-                            .foregroundStyle(browser.root == root ? DriveflowTheme.ink : DriveflowTheme.inkMuted)
-                    }
-                    .buttonStyle(NavRowButtonStyle(isSelected: browser.root == root))
-                }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("This session")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(DriveflowTheme.inkFaint)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                Text(
+                    browser.items.isEmpty
+                        ? "No files chosen yet"
+                        : "\(browser.items.count) file\(browser.items.count == 1 ? "" : "s") chosen"
+                )
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(DriveflowTheme.inkMuted)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer()
@@ -152,28 +155,44 @@ struct BrowserView: View {
     }
 
     private var toolbar: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             StepLabel(title: "Choose files")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(browser.breadcrumbs) { crumb in
-                        Button(crumb.name) {
-                            Task { await browser.goToBreadcrumb(crumb) }
+            HStack(spacing: 12) {
+                Button {
+                    Task { await browser.chooseFromGoogleDrive() }
+                } label: {
+                    HStack(spacing: 8) {
+                        if browser.isPicking || auth.isBusy {
+                            ProgressView()
+                                .controlSize(.small)
                         }
-                        .buttonStyle(GhostButtonStyle(prominent: crumb == browser.breadcrumbs.last))
-                        .font(.system(size: 13, weight: crumb == browser.breadcrumbs.last ? .semibold : .regular))
-                        if crumb != browser.breadcrumbs.last {
-                            Text("/")
-                                .foregroundStyle(DriveflowTheme.inkFaint)
-                        }
+                        Text(
+                            browser.isPicking || auth.isBusy
+                                ? "Opening Google…"
+                                : "Choose from Google Drive"
+                        )
+                        .font(.system(size: 13, weight: .semibold))
                     }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
                 }
+                .buttonStyle(PrimaryFillButtonStyle(enabled: !browser.isPicking && !auth.isBusy))
+                .disabled(browser.isPicking || auth.isBusy)
+
+                if !browser.selectedIDs.isEmpty {
+                    Button("Clear selection") {
+                        browser.clearSelection()
+                    }
+                    .buttonStyle(GhostButtonStyle())
+                    .font(.system(size: 12, weight: .medium))
+                }
+
+                Spacer()
             }
-            TextField("Search Drive", text: $browser.searchText)
-                .textFieldStyle(.plain)
-                .padding(8)
-                .background(DriveflowTheme.stone.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .onSubmit { browser.runSearch() }
+            Text("Google’s picker grants access only to the files you select. Driveflow does not list your whole Drive.")
+                .font(.system(size: 12))
+                .foregroundStyle(DriveflowTheme.inkMuted)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(20)
     }
@@ -185,21 +204,20 @@ struct BrowserView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if browser.items.isEmpty {
                 VStack(spacing: 8) {
-                    Text("Nothing here")
+                    Text("No files yet")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(DriveflowTheme.ink)
-                    Text("This folder is empty, or search returned no matches.")
+                    Text("Choose files in Google’s picker, then pick a destination and download.")
                         .font(.system(size: 13))
                         .foregroundStyle(DriveflowTheme.inkMuted)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 320)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(browser.items) { item in
                     itemRow(item)
                         .listRowBackground(Color.clear)
-                        .onAppear {
-                            Task { await browser.loadMoreIfNeeded(current: item) }
-                        }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
@@ -218,7 +236,7 @@ struct BrowserView: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(DriveflowTheme.ink)
                     .lineLimit(1)
-                Text(item.displaySize + (item.isGoogleNative ? " · exports on download" : ""))
+                Text(itemSubtitle(item))
                     .font(.system(size: 11))
                     .foregroundStyle(DriveflowTheme.inkFaint)
             }
@@ -231,22 +249,25 @@ struct BrowserView: View {
         .onTapGesture {
             browser.toggleSelection(item)
         }
-        .onTapGesture(count: 2) {
-            if item.isFolder {
-                Task { await browser.open(item) }
-            }
-        }
         .contextMenu {
-            if item.isFolder {
-                Button("Open") { Task { await browser.open(item) } }
-            }
             Button(selected ? "Deselect" : "Select") { browser.toggleSelection(item) }
+            Button("Remove from list") { browser.removeFromSession(item) }
         }
+    }
+
+    private func itemSubtitle(_ item: DriveItem) -> String {
+        if item.downloadIsFolder {
+            return "Folder · pick files inside to download"
+        }
+        if item.isGoogleNative {
+            return item.displaySize + " · exports on download"
+        }
+        return item.displaySize
     }
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let error = browser.lastError ?? downloads.lastError {
+            if let error = browser.lastError ?? downloads.lastError ?? auth.lastError {
                 ErrorBanner(error: error)
             }
 
@@ -309,7 +330,7 @@ struct BrowserView: View {
             return "Choose a destination folder first."
         }
         if browser.selectedItems.isEmpty {
-            return "Select one or more files or folders to download."
+            return "Select one or more picked files to download."
         }
         if downloads.pendingItemCount > 0 {
             return "Add these items to the transfer queue."
@@ -322,5 +343,8 @@ struct BrowserView: View {
         let items = browser.selectedItems
         browser.clearSelection()
         await downloads.enqueue(items: items, destination: destination)
+        if downloads.lastError == nil {
+            section = .transfers
+        }
     }
 }

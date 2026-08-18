@@ -32,7 +32,7 @@ final class AppState: ObservableObject {
         let auth = AuthSession()
         let drive = DriveClient(auth: auth)
         self.auth = auth
-        self.browser = DriveBrowserModel(client: drive)
+        self.browser = DriveBrowserModel(auth: auth, client: drive)
         let downloads = DownloadController(auth: auth, drive: drive)
         self.downloads = downloads
         terminateObserver = NotificationCenter.default.addObserver(

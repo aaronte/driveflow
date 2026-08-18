@@ -150,10 +150,10 @@ final class LoopbackAuthServer: @unchecked Sendable {
     }
 
     private func respond(on connection: NWConnection, success: Bool) {
-        let title = success ? "Signed in to Driveflow" : "Sign-in didn’t finish"
+        let title = success ? "Connected to Driveflow" : "Google Drive didn’t finish"
         let detail = success
             ? "You can close this tab and return to the app."
-            : "Return to Driveflow and try signing in again."
+            : "Return to Driveflow and try choosing files again."
         let body = """
         <!doctype html>
         <html><head><meta charset="utf-8"><title>\(title)</title></head>

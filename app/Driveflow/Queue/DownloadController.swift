@@ -112,6 +112,10 @@ final class DownloadController: ObservableObject {
                     item.isFolder = (try? await drive.isFolder(id: item.id)) ?? false
                     job.items[index] = item
                 }
+                // drive.file often does not grant children of a picked folder.
+                if item.isFolder || item.isSharedDriveRoot {
+                    try await drive.assertFolderChildrenAccessible(id: item.id)
+                }
                 let rcloneJobID = try await engine.copyItem(
                     id: item.id,
                     name: item.name,
