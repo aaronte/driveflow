@@ -10,15 +10,15 @@ final class DownloadController: ObservableObject {
     @Published private(set) var isEngineReady = false
 
     private let store = JobStore()
-    private let auth: AuthSession
+    private let driveAccess: DriveAccessSession
     private let drive: DriveClient
     private let engine = RcloneEngine()
     private var pollTask: Task<Void, Never>?
     private var activity: NSObjectProtocol?
     private var storeObservation: AnyCancellable?
 
-    init(auth: AuthSession, drive: DriveClient) {
-        self.auth = auth
+    init(driveAccess: DriveAccessSession, drive: DriveClient) {
+        self.driveAccess = driveAccess
         self.drive = drive
         storeObservation = store.objectWillChange.sink { [weak self] _ in
             Task { @MainActor in
@@ -214,7 +214,7 @@ final class DownloadController: ObservableObject {
     }
 
     private func injectToken() async throws {
-        try await engine.configureDrive(tokenJSON: try await auth.rcloneTokenJSON())
+        try await engine.configureDrive(tokenJSON: try await driveAccess.rcloneTokenJSON())
     }
 
     private func startPolling(jobID: UUID) {

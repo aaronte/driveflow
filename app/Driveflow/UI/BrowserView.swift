@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 private enum WorkspaceSection {
     case browse
@@ -7,22 +8,27 @@ private enum WorkspaceSection {
 
 struct BrowserView: View {
     @ObservedObject var auth: AuthSession
+    @ObservedObject var driveAccess: DriveAccessSession
     @ObservedObject var browser: DriveBrowserModel
     @ObservedObject var downloads: DownloadController
 
     @State private var destination: DestinationInfo?
     @State private var section: WorkspaceSection = .browse
+    @State private var didCopyShareEmail = false
 
     var body: some View {
         HSplitView {
             sidebar
-                .frame(minWidth: 180, idealWidth: 200, maxWidth: 240)
+                .frame(minWidth: 180, idealWidth: 200, maxWidth: 260)
             mainColumn
         }
         .background(DriveflowTheme.canvas)
         .task {
             await browser.bootstrap()
             await downloads.prepareEngine()
+        }
+        .onChange(of: driveAccess.boundFolderIDs) { _, _ in
+            Task { await browser.reload() }
         }
     }
 
@@ -41,7 +47,7 @@ struct BrowserView: View {
             .padding(.top, 8)
 
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(DriveRoot.allCases) { root in
+                ForEach(DriveRoot.shareBrowseRoots) { root in
                     Button {
                         Task { await browser.switchRoot(root) }
                     } label: {
@@ -53,6 +59,26 @@ struct BrowserView: View {
                 }
             }
 
+            if let shareEmail = driveAccess.shareEmail {
+                VStack(alignment: .leading, spacing: 6) {
+                    StepLabel(title: "Share email")
+                    Text(shareEmail)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(DriveflowTheme.inkMuted)
+                        .textSelection(.enabled)
+                        .lineLimit(3)
+                    Button(didCopyShareEmail ? "Copied" : "Copy address") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(shareEmail, forType: .string)
+                        didCopyShareEmail = true
+                        driveAccess.startWaitingForShare()
+                    }
+                    .buttonStyle(GhostButtonStyle(accent: true))
+                    .font(.system(size: 11, weight: .medium))
+                }
+                .padding(.top, 4)
+            }
+
             Spacer()
 
             if let email = auth.userEmail {
@@ -60,11 +86,13 @@ struct BrowserView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(DriveflowTheme.inkFaint)
                     .lineLimit(1)
+                    .help("License email (purchaser)")
             }
             Button("Sign out") {
                 Task {
                     await downloads.clearEngineCredentials()
                     browser.resetForSignOut()
+                    driveAccess.clear()
                     auth.signOut()
                 }
             }
@@ -188,9 +216,15 @@ struct BrowserView: View {
                     Text("Nothing here")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(DriveflowTheme.ink)
-                    Text("This folder is empty, or search returned no matches.")
+                    Text(
+                        browser.searchText.isEmpty
+                            ? "No folders are bound yet, or this folder is empty. Share another folder with your Driveflow address from the sidebar."
+                            : "Search returned no matches in your shared folders."
+                    )
                         .font(.system(size: 13))
                         .foregroundStyle(DriveflowTheme.inkMuted)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 360)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {

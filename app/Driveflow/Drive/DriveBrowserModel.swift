@@ -3,8 +3,10 @@ import SwiftUI
 
 @MainActor
 final class DriveBrowserModel: ObservableObject {
-    @Published var root: DriveRoot = .myDrive
-    @Published private(set) var breadcrumbs: [DriveBreadcrumb] = [DriveBreadcrumb(id: "root", name: "My Drive")]
+    @Published var root: DriveRoot = .sharedWithMe
+    @Published private(set) var breadcrumbs: [DriveBreadcrumb] = [
+        DriveBreadcrumb(id: "root", name: DriveRoot.sharedWithMe.title)
+    ]
     @Published private(set) var items: [DriveItem] = []
     @Published private(set) var isLoading = false
     @Published private(set) var isLoadingMore = false
@@ -13,23 +15,36 @@ final class DriveBrowserModel: ObservableObject {
     @Published var lastError: AppError?
 
     private let client: DriveClient
+    private weak var driveAccess: DriveAccessSession?
     private var nextPageToken: String?
     private var searchTask: Task<Void, Never>?
 
-    init(client: DriveClient) {
+    init(client: DriveClient, driveAccess: DriveAccessSession? = nil) {
         self.client = client
+        self.driveAccess = driveAccess
+    }
+
+    func attach(driveAccess: DriveAccessSession) {
+        self.driveAccess = driveAccess
     }
 
     var selectedItems: [DriveItem] {
         items.filter { selectedIDs.contains($0.id) }
     }
 
+    private var boundFolderIDs: Set<String> {
+        driveAccess?.boundFolderIDs ?? []
+    }
+
     func bootstrap() async {
+        root = .sharedWithMe
         breadcrumbs = [DriveBreadcrumb(id: "root", name: root.title)]
         await reload()
     }
 
     func switchRoot(_ newRoot: DriveRoot) async {
+        // Share-email flow only exposes Shared with me.
+        guard DriveRoot.shareBrowseRoots.contains(newRoot) else { return }
         root = newRoot
         selectedIDs.removeAll()
         breadcrumbs = [DriveBreadcrumb(id: "root", name: newRoot.title)]
@@ -43,7 +58,11 @@ final class DriveBrowserModel: ObservableObject {
         defer { isLoading = false }
         do {
             let parent = breadcrumbs.count > 1 ? breadcrumbs.last?.id : nil
-            let result = try await client.list(parentID: parent == "root" ? nil : parent, root: root)
+            let result = try await client.list(
+                parentID: parent == "root" ? nil : parent,
+                root: root,
+                boundFolderIDs: boundFolderIDs
+            )
             items = result.items
             nextPageToken = result.nextPageToken
         } catch let error as AppError {
@@ -64,7 +83,8 @@ final class DriveBrowserModel: ObservableObject {
             let result = try await client.list(
                 parentID: parent == "root" ? nil : parent,
                 root: root,
-                pageToken: nextPageToken
+                pageToken: nextPageToken,
+                boundFolderIDs: boundFolderIDs
             )
             items.append(contentsOf: result.items)
             self.nextPageToken = result.nextPageToken
@@ -106,6 +126,7 @@ final class DriveBrowserModel: ObservableObject {
         searchText = ""
         nextPageToken = nil
         lastError = nil
+        root = .sharedWithMe
         breadcrumbs = [DriveBreadcrumb(id: "root", name: root.title)]
     }
 
@@ -116,11 +137,12 @@ final class DriveBrowserModel: ObservableObject {
             Task { await reload() }
             return
         }
+        let bound = boundFolderIDs
         searchTask = Task {
             isLoading = true
             defer { isLoading = false }
             do {
-                items = try await client.search(query: query)
+                items = try await client.search(query: query, boundFolderIDs: bound)
                 nextPageToken = nil
             } catch let error as AppError {
                 lastError = error

@@ -7,6 +7,8 @@ struct DriveItem: Identifiable, Hashable, Sendable {
     let size: Int64?
     let modifiedTime: Date?
     let md5Checksum: String?
+    /// Parent folder IDs from Drive (used for bound-folder search filtering).
+    let parentIDs: [String]
     let shortcutTargetId: String?
     let shortcutTargetMimeType: String?
     let isFolder: Bool
@@ -73,4 +75,7 @@ enum DriveRoot: String, CaseIterable, Identifiable {
         case .sharedDrives: return "Shared drives"
         }
     }
+
+    /// Roots shown in the share-email browse flow (SA My Drive is empty / unused).
+    static var shareBrowseRoots: [DriveRoot] { [.sharedWithMe] }
 }

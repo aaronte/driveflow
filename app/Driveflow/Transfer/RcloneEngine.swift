@@ -163,14 +163,15 @@ actor RcloneEngine {
 
     func configureDrive(tokenJSON: String) async throws {
         try await ensureRunning()
+        // Access-token-only remote: the token is a short-lived service-account
+        // Bearer mint. Do not embed an SA JSON key or user OAuth client secrets
+        // here — DownloadController re-injects a fresh token before transfers.
         _ = try await rc("config/create", body: [
             "name": Self.remoteName,
             "type": "drive",
             "parameters": [
                 "token": tokenJSON,
                 "scope": "drive.readonly",
-                "client_id": AppConfig.googleClientID,
-                "client_secret": AppConfig.googleClientSecret,
             ],
             "opt": [
                 "nonInteractive": true,

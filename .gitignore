@@ -19,7 +19,12 @@ DerivedData/
 .derivedData/
 app/Driveflow/Resources/oauth-client.json
 !app/Driveflow/Resources/oauth-client.example.json
+app/Driveflow/Resources/service-account.json
+!app/Driveflow/Resources/service-account.example.json
+**/service-account*.json
+!**/service-account.example.json
 **/client_secret*.json
+
 app/Driveflow/Resources/rclone
 !app/Driveflow/Resources/rclone.version
 *.log

@@ -8,6 +8,8 @@ final class AuthSession: NSObject, ObservableObject {
     @Published private(set) var userEmail: String?
     @Published private(set) var isBusy = false
     @Published var lastError: AppError?
+    /// Share session returned by an extended license check (buyer email → SA token).
+    @Published private(set) var pendingShareSession: ShareMintClient.Session?
 
     private let accessAccount = "google.access"
     private let refreshAccount = "google.refresh"
@@ -167,6 +169,7 @@ final class AuthSession: NSObject, ObservableObject {
         clearTokens()
         isSignedIn = false
         userEmail = nil
+        pendingShareSession = nil
         if let tokenToRevoke, !tokenToRevoke.isEmpty {
             Task { await Self.revokeGoogleGrant(token: tokenToRevoke) }
         }
@@ -189,25 +192,10 @@ final class AuthSession: NSObject, ObservableObject {
         return token
     }
 
-    /// rclone-compatible OAuth token JSON for configuring the Drive remote.
-    func rcloneTokenJSON() async throws -> String {
-        let access = try await validAccessToken()
-        let refresh = (try? CredentialStore.get(account: refreshAccount)) ?? ""
-        let expiryDate: Date
-        if let expiryString = try? CredentialStore.get(account: expiryAccount),
-           let expiry = TimeInterval(expiryString) {
-            expiryDate = Date(timeIntervalSince1970: expiry)
-        } else {
-            expiryDate = Date().addingTimeInterval(3600)
-        }
-        let payload: [String: Any] = [
-            "access_token": access,
-            "token_type": "Bearer",
-            "refresh_token": refresh,
-            "expiry": ISO8601DateFormatter().string(from: expiryDate),
-        ]
-        let data = try JSONSerialization.data(withJSONObject: payload)
-        return String(data: data, encoding: .utf8) ?? "{}"
+    func consumePendingShareSession() -> ShareMintClient.Session? {
+        let session = pendingShareSession
+        pendingShareSession = nil
+        return session
     }
 
     private func exchangeCode(_ code: String, verifier: String, redirectURI: String) async throws {
@@ -290,16 +278,18 @@ final class AuthSession: NSObject, ObservableObject {
     }
 
     /// Paid builds: require a matching purchase email before treating the session as signed in.
+    /// When the license server also returns share credentials, stash them for DriveAccessSession.
     private func enforcePaidLicenseIfNeeded() async throws {
         guard AppConfig.requiresPaidLicense else { return }
         guard let email = userEmail?.trimmingCharacters(in: .whitespacesAndNewlines), !email.isEmpty else {
             throw AppError.licenseRequired(email: nil)
         }
         do {
-            let allowed = try await LicenseClient.hasLicense(email: email)
-            if !allowed {
+            let result = try await LicenseClient.check(email: email)
+            if !result.allowed {
                 throw AppError.licenseRequired(email: email)
             }
+            pendingShareSession = result.shareSession
         } catch let error as AppError {
             throw error
         } catch {

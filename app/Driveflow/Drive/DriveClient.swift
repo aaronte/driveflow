@@ -1,12 +1,12 @@
 import Foundation
 
 actor DriveClient {
-    private let auth: AuthSession
+    private let tokenProvider: any AccessTokenProviding
     private let session: URLSession
     private var folderCache: [String: [DriveItem]] = [:]
 
-    init(auth: AuthSession, session: URLSession = .shared) {
-        self.auth = auth
+    init(tokenProvider: any AccessTokenProviding, session: URLSession = .shared) {
+        self.tokenProvider = tokenProvider
         self.session = session
     }
 
@@ -14,8 +14,16 @@ actor DriveClient {
         folderCache.removeAll()
     }
 
-    func list(parentID: String?, root: DriveRoot, pageToken: String? = nil) async throws -> (items: [DriveItem], nextPageToken: String?) {
-        let cacheKey = "\(root.rawValue):\(parentID ?? "root"):\(pageToken ?? "")"
+    /// - Parameter boundFolderIDs: When non-nil and non-empty, Shared-with-me **root**
+    ///   listings are filtered to these IDs (per-license isolation on a shared SA).
+    ///   Pass `nil` to skip filtering (onboarding poll).
+    func list(
+        parentID: String?,
+        root: DriveRoot,
+        pageToken: String? = nil,
+        boundFolderIDs: Set<String>? = []
+    ) async throws -> (items: [DriveItem], nextPageToken: String?) {
+        let cacheKey = "\(root.rawValue):\(parentID ?? "root"):\(pageToken ?? ""):\(boundCacheSuffix(boundFolderIDs))"
         if pageToken == nil, let cached = folderCache[cacheKey] {
             return (cached, nil)
         }
@@ -43,7 +51,7 @@ actor DriveClient {
         var items: [URLQueryItem] = [
             URLQueryItem(name: "q", value: query),
             URLQueryItem(name: "pageSize", value: "100"),
-            URLQueryItem(name: "fields", value: "nextPageToken,files(id,name,mimeType,size,modifiedTime,md5Checksum,shortcutDetails(targetId,targetMimeType))"),
+            URLQueryItem(name: "fields", value: "nextPageToken,files(id,name,mimeType,size,modifiedTime,md5Checksum,parents,shortcutDetails(targetId,targetMimeType))"),
             URLQueryItem(name: "orderBy", value: "folder,name_natural"),
             URLQueryItem(name: "supportsAllDrives", value: "true"),
             URLQueryItem(name: "includeItemsFromAllDrives", value: "true"),
@@ -54,8 +62,13 @@ actor DriveClient {
         components.queryItems = items
 
         let json = try await getJSON(url: components.url!)
-        let files = (json["files"] as? [[String: Any]] ?? []).compactMap(Self.parseItem)
+        var files = (json["files"] as? [[String: Any]] ?? []).compactMap(Self.parseItem)
         let next = json["nextPageToken"] as? String
+
+        if root == .sharedWithMe, parentID == nil, let boundFolderIDs, !boundFolderIDs.isEmpty {
+            files = files.filter { boundFolderIDs.contains($0.id) }
+        }
+
         if pageToken == nil {
             folderCache[cacheKey] = files
         }
@@ -82,18 +95,31 @@ actor DriveClient {
         return targetMime == "application/vnd.google-apps.folder"
     }
 
-    func search(query: String) async throws -> [DriveItem] {
+    func search(query: String, boundFolderIDs: Set<String> = []) async throws -> [DriveItem] {
         let escaped = query.replacingOccurrences(of: "'", with: "\\'")
         var components = URLComponents(url: AppConfig.driveAPIBase.appendingPathComponent("files"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
-            URLQueryItem(name: "q", value: "name contains '\(escaped)' and trashed = false"),
+            URLQueryItem(name: "q", value: "name contains '\(escaped)' and trashed = false and sharedWithMe = true"),
             URLQueryItem(name: "pageSize", value: "50"),
-            URLQueryItem(name: "fields", value: "files(id,name,mimeType,size,modifiedTime,md5Checksum,shortcutDetails(targetId,targetMimeType))"),
+            URLQueryItem(name: "fields", value: "files(id,name,mimeType,size,modifiedTime,md5Checksum,parents,shortcutDetails(targetId,targetMimeType))"),
             URLQueryItem(name: "supportsAllDrives", value: "true"),
             URLQueryItem(name: "includeItemsFromAllDrives", value: "true"),
         ]
         let json = try await getJSON(url: components.url!)
-        return (json["files"] as? [[String: Any]] ?? []).compactMap(Self.parseItem)
+        var files = (json["files"] as? [[String: Any]] ?? []).compactMap(Self.parseItem)
+        if !boundFolderIDs.isEmpty {
+            files = files.filter { item in
+                boundFolderIDs.contains(item.id)
+                    || !boundFolderIDs.isDisjoint(with: Set(item.parentIDs))
+            }
+        }
+        return files
+    }
+
+    private func boundCacheSuffix(_ bound: Set<String>?) -> String {
+        guard let bound else { return "unfiltered" }
+        if bound.isEmpty { return "empty" }
+        return bound.sorted().joined(separator: ",")
     }
 
     private func listSharedDrives() async throws -> (items: [DriveItem], nextPageToken: String?) {
@@ -111,6 +137,7 @@ actor DriveClient {
                 size: nil,
                 modifiedTime: nil,
                 md5Checksum: nil,
+                parentIDs: [],
                 shortcutTargetId: nil,
                 shortcutTargetMimeType: nil,
                 isFolder: true,
@@ -122,7 +149,7 @@ actor DriveClient {
     }
 
     private func getJSON(url: URL) async throws -> [String: Any] {
-        let token = try await auth.validAccessToken()
+        let token = try await tokenProvider.validAccessToken()
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: request)
@@ -161,6 +188,7 @@ actor DriveClient {
             return ISO8601DateFormatter().date(from: raw)
         }()
         let isNative = googleNativePrefixes.contains { mime.hasPrefix($0) }
+        let parents = dict["parents"] as? [String] ?? []
         return DriveItem(
             id: id,
             name: name,
@@ -168,6 +196,7 @@ actor DriveClient {
             size: size,
             modifiedTime: modified,
             md5Checksum: dict["md5Checksum"] as? String,
+            parentIDs: parents,
             shortcutTargetId: shortcutTargetId,
             shortcutTargetMimeType: shortcutTargetMimeType,
             isFolder: isFolder,

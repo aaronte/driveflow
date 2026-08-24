@@ -1,12 +1,15 @@
 import Foundation
 
 enum LicenseClient {
-    struct CheckResponse: Decodable {
+    struct CheckResult: Sendable {
         let allowed: Bool
+        /// Present when the license server also mints a share/Drive session.
+        let shareSession: ShareMintClient.Session?
     }
 
-    /// Returns true when the email has a paid license.
-    static func hasLicense(email: String) async throws -> Bool {
+    /// Returns whether the buyer email has a paid license, and optionally a
+    /// share-access session minted by the same endpoint.
+    static func check(email: String) async throws -> CheckResult {
         let url = AppConfig.licenseCheckURL
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -22,7 +25,14 @@ enum LicenseClient {
         guard (200..<300).contains(http.statusCode) else {
             throw AppError.network("License check failed (HTTP \(http.statusCode)).")
         }
-        let decoded = try JSONDecoder().decode(CheckResponse.self, from: data)
-        return decoded.allowed
+        let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        let allowed = (json["allowed"] as? Bool) ?? false
+        let share = ShareMintClient.session(fromLicenseJSON: json)
+        return CheckResult(allowed: allowed, shareSession: share)
+    }
+
+    /// Returns true when the email has a paid license.
+    static func hasLicense(email: String) async throws -> Bool {
+        try await check(email: email).allowed
     }
 }

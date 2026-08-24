@@ -64,7 +64,7 @@ struct SignInView: View {
                         )
                     )
 
-                Text("Google Drive downloads, at the speed of your connection.")
+                Text("Sign in to verify your license, then share a Drive folder with your Driveflow address.")
                     .font(.system(size: 17, weight: .regular))
                     .foregroundStyle(DriveflowTheme.inkMuted)
                     .multilineTextAlignment(.center)

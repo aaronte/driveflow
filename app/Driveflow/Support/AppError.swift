@@ -2,6 +2,8 @@ import Foundation
 
 enum AppError: LocalizedError, Identifiable {
     case notConfigured
+    case shareAccessNotConfigured
+    case waitingForShare
     case authCancelled
     case authFailed(String)
     case authRevoked(String)
@@ -22,6 +24,10 @@ enum AppError: LocalizedError, Identifiable {
         switch self {
         case .notConfigured:
             return "Google sign-in isn’t set up yet. Add Desktop OAuth credentials via env vars or oauth-client.json (see README)."
+        case .shareAccessNotConfigured:
+            return "Drive share access isn’t set up yet. Configure a share mint URL, a local service-account key, or DRIVEFLOW_SHARE_EMAIL + DRIVEFLOW_SHARE_ACCESS_TOKEN (see README)."
+        case .waitingForShare:
+            return "No folders shared yet. Share a Drive folder with the address above as Viewer (uncheck Notify people), then wait a moment."
         case .authCancelled:
             return "Sign-in was cancelled."
         case .authFailed(let detail):
@@ -34,7 +40,7 @@ enum AppError: LocalizedError, Identifiable {
             }
             return "No Driveflow license for this Google account. Buy a license with this email to continue."
         case .tokenExpired:
-            return "Your Google session expired. Sign in again."
+            return "Your Driveflow session expired. Sign in again."
         case .network(let detail):
             return "Network problem. \(detail)"
         case .driveAPI(let detail):
@@ -58,6 +64,10 @@ enum AppError: LocalizedError, Identifiable {
         switch self {
         case .notConfigured:
             return "Copy oauth-client.example.json to oauth-client.json, or set DRIVEFLOW_GOOGLE_CLIENT_ID and DRIVEFLOW_GOOGLE_CLIENT_SECRET."
+        case .shareAccessNotConfigured:
+            return "Create a service account in GCP project driveflow-503421, enable the Drive API, and use the mint API or a gitignored local key for development."
+        case .waitingForShare:
+            return "In Google Drive: Share → paste the Driveflow email → Viewer → uncheck Notify people → Share."
         case .licenseRequired:
             return "Purchase at usedriveflow.app using this Google email, then sign in again."
         case .authCancelled, .authFailed, .authRevoked, .tokenExpired:

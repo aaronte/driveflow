@@ -4,7 +4,7 @@ enum AppConfig {
     static let appName = "Driveflow"
     static let bundleID = "com.aaronte.driveflow"
 
-    /// Google OAuth Desktop client credentials.
+    /// Google OAuth Desktop client credentials (identity only — openid/email).
     ///
     /// Resolution order (first non-empty wins):
     /// 1. `DRIVEFLOW_GOOGLE_CLIENT_ID` / `DRIVEFLOW_GOOGLE_CLIENT_SECRET` env vars
@@ -64,9 +64,10 @@ enum AppConfig {
     static let googleTokenEndpoint = URL(string: "https://oauth2.googleapis.com/token")!
     static let googleRevokeEndpoint = URL(string: "https://oauth2.googleapis.com/revoke")!
 
-    /// Drive access plus email (needed for license checks after sign-in).
-    static let oauthScopes = "openid email https://www.googleapis.com/auth/drive.readonly"
-    static let driveScope = oauthScopes
+    /// Purchaser identity only — Drive files are accessed via a service-account token.
+    static let oauthScopes = "openid email"
+    /// Scope requested when minting service-account access tokens (2LO).
+    static let driveReadonlyScope = "https://www.googleapis.com/auth/drive.readonly"
     static let driveAPIBase = URL(string: "https://www.googleapis.com/drive/v3")!
 
     static let rcloneRCUser = "driveflow"
@@ -84,6 +85,34 @@ enum AppConfig {
             return url
         }
         return URL(string: "https://usedriveflow.app/api/license/check")!
+    }
+
+    /// Optional share-session mint endpoint.
+    ///
+    /// `POST { "email": "<buyer email>" }` →
+    /// `{ "shareEmail", "accessToken", "expiresIn" }` (or `expiresAt` unix seconds).
+    ///
+    /// When unset, the app falls back to a local/dev service-account key or
+    /// `DRIVEFLOW_SHARE_ACCESS_TOKEN` + `DRIVEFLOW_SHARE_EMAIL`.
+    /// Override with `DRIVEFLOW_SHARE_MINT_URL`.
+    static var shareMintURL: URL? {
+        if let raw = ProcessInfo.processInfo.environment["DRIVEFLOW_SHARE_MINT_URL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty,
+           let url = URL(string: raw) {
+            return url
+        }
+        // Default production mint lives next to license check when the backend is ready.
+        // Until then, leave nil so local SA key / env token paths work without a 404.
+        return nil
+    }
+
+    /// Public share-target email override for display when minting from an env token.
+    static var configuredShareEmail: String? {
+        let value = ProcessInfo.processInfo.environment["DRIVEFLOW_SHARE_EMAIL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value, !value.isEmpty else { return nil }
+        return value
     }
 
     /// Paid notarized builds set `DRIVEFLOW_PAID_BUILD` at compile time (see release script).

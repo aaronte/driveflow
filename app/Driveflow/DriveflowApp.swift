@@ -9,6 +9,7 @@ struct DriveflowApp: App {
         WindowGroup("Driveflow") {
             ContentView()
                 .environmentObject(appState.auth)
+                .environmentObject(appState.driveAccess)
                 .environmentObject(appState.browser)
                 .environmentObject(appState.downloads)
                 .preferredColorScheme(.light)
@@ -23,6 +24,7 @@ struct DriveflowApp: App {
 @MainActor
 final class AppState: ObservableObject {
     let auth: AuthSession
+    let driveAccess: DriveAccessSession
     let browser: DriveBrowserModel
     let downloads: DownloadController
 
@@ -30,10 +32,12 @@ final class AppState: ObservableObject {
 
     init() {
         let auth = AuthSession()
-        let drive = DriveClient(auth: auth)
+        let driveAccess = DriveAccessSession()
+        let drive = DriveClient(tokenProvider: driveAccess)
         self.auth = auth
-        self.browser = DriveBrowserModel(client: drive)
-        let downloads = DownloadController(auth: auth, drive: drive)
+        self.driveAccess = driveAccess
+        self.browser = DriveBrowserModel(client: drive, driveAccess: driveAccess)
+        let downloads = DownloadController(driveAccess: driveAccess, drive: drive)
         self.downloads = downloads
         terminateObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
