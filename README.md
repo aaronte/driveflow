@@ -8,10 +8,10 @@ A signed build is at [usedriveflow.app](https://usedriveflow.app).
 
 ## How it works
 
-1. **Sign in with Google** uses `openid email` only — that email is the **purchaser / license** identity.
-2. Driveflow shows a **service-account share address** (e.g. `lic-….@driveflow-503421.iam.gserviceaccount.com`).
-3. You share the Drive folder you want as **Viewer**, and **uncheck Notify people** (SAs have no inbox).
-4. The app polls `sharedWithMe`, then opens the original **Shared with me** tree (`BrowserView`).
+1. **Sign in with Google** uses `openid email` only — that email is the **purchaser / license** identity. The ID token from that sign-in is what the mint server verifies.
+2. **Add a folder**: paste a Google Drive folder link. Driveflow shows your **service-account share address** (e.g. `lic-….@driveflow-503421.iam.gserviceaccount.com`).
+3. Share that folder as **Viewer**, and **uncheck Notify people** (SAs have no inbox). **Open sharing in Drive** jumps to the folder.
+4. The app polls `files.get` on the pasted folder until the service account can read it, then opens the browser rooted at folders you added.
 5. Browse and download use a **short-lived SA access token** (never a user `drive.readonly` grant, never an SA JSON key inside the app).
 
 See [docs/SHARE_ACCESS.md](docs/SHARE_ACCESS.md) for the mint API contract, GCP setup, and isolation notes.
@@ -67,7 +67,7 @@ pip install cryptography
 eval "$(./scripts/mint-sa-token.py --print-exports)"
 ```
 
-Production should mint short-lived tokens via `DRIVEFLOW_SHARE_MINT_URL` or an extended license-check response (see docs).
+Release builds mint short-lived tokens at `https://usedriveflow.app/api/drive/session` (`DRIVEFLOW_SHARE_MINT_URL` overrides): `POST` with `Authorization: Bearer <Google ID token>` and body `{ "idToken" }`, response `{ shareEmail, accessToken, expiresIn, expiresAt }`. See [docs/SHARE_ACCESS.md](docs/SHARE_ACCESS.md).
 
 ### 4. Generate the Xcode project
 

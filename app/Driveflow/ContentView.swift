@@ -11,7 +11,7 @@ struct ContentView: View {
             if !auth.isSignedIn {
                 SignInView(auth: auth)
                     .transition(.opacity.combined(with: .offset(y: 8)))
-            } else if !driveAccess.isReady {
+            } else if driveAccess.showsShareSetup {
                 ShareSetupView(auth: auth, driveAccess: driveAccess, downloads: downloads)
                     .transition(.opacity.combined(with: .offset(y: 8)))
             } else {
@@ -25,10 +25,24 @@ struct ContentView: View {
             }
         }
         .animation(.easeOut(duration: 0.22), value: auth.isSignedIn)
-        .animation(.easeOut(duration: 0.22), value: driveAccess.isReady)
+        .animation(.easeOut(duration: 0.22), value: driveAccess.showsShareSetup)
         .frame(minWidth: 960, minHeight: 640)
         .task(id: auth.isSignedIn) {
             await prepareDriveAccessIfNeeded()
+        }
+        .onChange(of: driveAccess.authenticationFailure?.id) { _, failureID in
+            guard failureID != nil, let failure = driveAccess.authenticationFailure else { return }
+            returnToSignIn(because: failure)
+        }
+    }
+
+    private func returnToSignIn(because failure: AppError) {
+        Task {
+            await downloads.clearEngineCredentials()
+            browser.resetForSignOut()
+            driveAccess.clear()
+            auth.signOut()
+            auth.lastError = failure
         }
     }
 

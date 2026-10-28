@@ -19,7 +19,7 @@ struct BrowserView: View {
     var body: some View {
         HSplitView {
             sidebar
-                .frame(minWidth: 180, idealWidth: 200, maxWidth: 260)
+                .frame(minWidth: 210, idealWidth: 232, maxWidth: 280)
             mainColumn
         }
         .background(DriveflowTheme.canvas)
@@ -28,12 +28,12 @@ struct BrowserView: View {
             await downloads.prepareEngine()
         }
         .onChange(of: driveAccess.boundFolderIDs) { _, _ in
-            Task { await browser.reload() }
+            Task { await browser.reloadBoundFolders(preferredID: driveAccess.preferredFolderID) }
         }
     }
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
                 Image("AppLogo")
                     .resizable()
@@ -46,61 +46,139 @@ struct BrowserView: View {
             }
             .padding(.top, 8)
 
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(DriveRoot.shareBrowseRoots) { root in
+            VStack(alignment: .leading, spacing: 4) {
+                StepLabel(title: "Shared with Driveflow")
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 2)
+                ForEach(browser.boundFolders) { folder in
+                    let isSelected = browser.selectedFolderID == folder.id
                     Button {
-                        Task { await browser.switchRoot(root) }
+                        Task { await browser.showBoundFolder(folder.id, resetStack: true) }
                     } label: {
-                        Text(root.title)
-                            .font(.system(size: 13, weight: browser.root == root ? .semibold : .regular))
-                            .foregroundStyle(browser.root == root ? DriveflowTheme.ink : DriveflowTheme.inkMuted)
+                        HStack(spacing: 8) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 13))
+                                .foregroundStyle(DriveflowTheme.inkMuted)
+                            Text(folder.name)
+                                .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                                .foregroundStyle(DriveflowTheme.ink)
+                                .lineLimit(1)
+                            Spacer(minLength: 6)
+                            if let count = folder.itemCountLabel {
+                                Text(count)
+                                    .font(.system(size: 12, design: .rounded))
+                                    .foregroundStyle(DriveflowTheme.inkFaint)
+                            }
+                        }
                     }
-                    .buttonStyle(NavRowButtonStyle(isSelected: browser.root == root))
+                    .buttonStyle(
+                        NavRowButtonStyle(
+                            isSelected: isSelected,
+                            selectionFill: DriveflowTheme.accent.opacity(0.14)
+                        )
+                    )
+                    .accessibilityLabel(folderAccessibilityLabel(folder))
                 }
             }
 
-            if let shareEmail = driveAccess.shareEmail {
-                VStack(alignment: .leading, spacing: 6) {
-                    StepLabel(title: "Share email")
-                    Text(shareEmail)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(DriveflowTheme.inkMuted)
-                        .textSelection(.enabled)
-                        .lineLimit(3)
-                    Button(didCopyShareEmail ? "Copied" : "Copy address") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(shareEmail, forType: .string)
-                        didCopyShareEmail = true
-                        driveAccess.startWaitingForShare()
-                    }
-                    .buttonStyle(GhostButtonStyle(accent: true))
-                    .font(.system(size: 11, weight: .medium))
-                }
-                .padding(.top, 4)
-            }
+            Spacer(minLength: 12)
 
-            Spacer()
+            shareEmailCard
 
             if let email = auth.userEmail {
-                Text(email)
-                    .font(.system(size: 11))
-                    .foregroundStyle(DriveflowTheme.inkFaint)
-                    .lineLimit(1)
-                    .help("License email (purchaser)")
-            }
-            Button("Sign out") {
-                Task {
-                    await downloads.clearEngineCredentials()
-                    browser.resetForSignOut()
-                    driveAccess.clear()
-                    auth.signOut()
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(email)
+                        .font(.system(size: 11))
+                        .foregroundStyle(DriveflowTheme.inkFaint)
+                        .lineLimit(1)
+                        .help("License email (purchaser)")
+                    Spacer(minLength: 8)
+                    Button("Sign out") {
+                        signOut()
+                    }
+                    .buttonStyle(GhostButtonStyle())
+                    .font(.system(size: 11, weight: .medium))
                 }
-            }
+            } else {
+                Button("Sign out") {
+                    signOut()
+                }
                 .buttonStyle(GhostButtonStyle())
                 .font(.system(size: 12, weight: .medium))
+            }
         }
         .padding(16)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(DriveflowTheme.paper)
+    }
+
+    private var shareEmailCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            StepLabel(title: "Share email")
+            HStack(alignment: .top, spacing: 8) {
+                Text(driveAccess.shareEmail ?? "Loading share address…")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(DriveflowTheme.ink)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    copyShareEmail()
+                } label: {
+                    Image(systemName: didCopyShareEmail ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(
+                            didCopyShareEmail ? DriveflowTheme.accent : DriveflowTheme.inkMuted
+                        )
+                        .frame(width: 28, height: 28)
+                        .background(
+                            DriveflowTheme.paper,
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(driveAccess.shareEmail == nil)
+                .accessibilityLabel(didCopyShareEmail ? "Copied share email" : "Copy share email")
+            }
+            Button {
+                driveAccess.presentAddFolder()
+            } label: {
+                Label("Add folder", systemImage: "plus")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(DriveflowTheme.accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add folder")
+        }
+        .padding(12)
+        .background(
+            DriveflowTheme.canvas.opacity(0.72),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+    }
+
+    private func folderAccessibilityLabel(_ folder: BoundFolderSummary) -> String {
+        if let count = folder.itemCountLabel {
+            return "\(folder.name), \(count) items"
+        }
+        return folder.name
+    }
+
+    private func copyShareEmail() {
+        guard let shareEmail = driveAccess.shareEmail, !shareEmail.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(shareEmail, forType: .string)
+        didCopyShareEmail = true
+    }
+
+    private func signOut() {
+        Task {
+            await downloads.clearEngineCredentials()
+            browser.resetForSignOut()
+            driveAccess.clear()
+            auth.signOut()
+        }
     }
 
     private var mainColumn: some View {
@@ -218,7 +296,7 @@ struct BrowserView: View {
                         .foregroundStyle(DriveflowTheme.ink)
                     Text(
                         browser.searchText.isEmpty
-                            ? "No folders are bound yet, or this folder is empty. Share another folder with your Driveflow address from the sidebar."
+                            ? "This folder is empty."
                             : "Search returned no matches in your shared folders."
                     )
                         .font(.system(size: 13))

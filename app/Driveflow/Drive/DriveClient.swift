@@ -32,19 +32,20 @@ actor DriveClient {
         switch root {
         case .myDrive:
             let parent = parentID ?? "root"
-            query = "'\(parent)' in parents and trashed = false"
+            query = "'\(Self.escapeQuery(parent))' in parents and trashed = false"
         case .sharedWithMe:
-            if let parentID {
-                query = "'\(parentID)' in parents and trashed = false"
-            } else {
-                query = "sharedWithMe = true and trashed = false"
+            // Browse is rooted at a bound folder. Never list every item shared
+            // with the service account — that would show other buyers' folders.
+            guard let parentID else {
+                return ([], nil)
             }
+            query = "'\(Self.escapeQuery(parentID))' in parents and trashed = false"
         case .sharedDrives:
             // Shared drives listing uses a different endpoint when parent is nil.
             if parentID == nil {
                 return try await listSharedDrives()
             }
-            query = "'\(parentID!)' in parents and trashed = false"
+            query = "'\(Self.escapeQuery(parentID!))' in parents and trashed = false"
         }
 
         var components = URLComponents(url: AppConfig.driveAPIBase.appendingPathComponent("files"), resolvingAgainstBaseURL: false)!
@@ -56,18 +57,17 @@ actor DriveClient {
             URLQueryItem(name: "supportsAllDrives", value: "true"),
             URLQueryItem(name: "includeItemsFromAllDrives", value: "true"),
         ]
+        if root == .sharedWithMe {
+            items.append(URLQueryItem(name: "corpora", value: "allDrives"))
+        }
         if let pageToken {
             items.append(URLQueryItem(name: "pageToken", value: pageToken))
         }
         components.queryItems = items
 
         let json = try await getJSON(url: components.url!)
-        var files = (json["files"] as? [[String: Any]] ?? []).compactMap(Self.parseItem)
+        let files = (json["files"] as? [[String: Any]] ?? []).compactMap(Self.parseItem)
         let next = json["nextPageToken"] as? String
-
-        if root == .sharedWithMe, parentID == nil, let boundFolderIDs, !boundFolderIDs.isEmpty {
-            files = files.filter { boundFolderIDs.contains($0.id) }
-        }
 
         if pageToken == nil {
             folderCache[cacheKey] = files
@@ -78,7 +78,9 @@ actor DriveClient {
     /// Resolves whether a Drive ID is a folder (follows shortcuts).
     func isFolder(id: String) async throws -> Bool {
         var components = URLComponents(
-            url: AppConfig.driveAPIBase.appendingPathComponent("files/\(id)"),
+            url: AppConfig.driveAPIBase
+                .appendingPathComponent("files")
+                .appendingPathComponent(id),
             resolvingAgainstBaseURL: false
         )!
         components.queryItems = [
@@ -95,25 +97,97 @@ actor DriveClient {
         return targetMime == "application/vnd.google-apps.folder"
     }
 
+    /// Name plus child count for a folder the service account can already read.
+    func folderSummary(id: String) async throws -> BoundFolderSummary {
+        var components = URLComponents(
+            url: AppConfig.driveAPIBase
+                .appendingPathComponent("files")
+                .appendingPathComponent(id),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "fields", value: "id,name,mimeType"),
+            URLQueryItem(name: "supportsAllDrives", value: "true"),
+        ]
+        let json = try await getJSON(url: components.url!)
+        let name = (json["name"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let counted = try await countChildren(parentID: id)
+        return BoundFolderSummary(
+            id: id,
+            name: (name?.isEmpty == false ? name! : nil) ?? "Shared folder",
+            itemCount: counted.count,
+            itemCountIsLowerBound: counted.capped
+        )
+    }
+
     func search(query: String, boundFolderIDs: Set<String> = []) async throws -> [DriveItem] {
-        let escaped = query.replacingOccurrences(of: "'", with: "\\'")
+        let ids = boundFolderIDs.filter { !$0.isEmpty }
+        if ids.isEmpty { return [] }
+        let escaped = Self.escapeQuery(query)
+        let scope = ids.map { id -> String in
+            let safe = Self.escapeQuery(id)
+            return "'\(safe)' in parents or id = '\(safe)'"
+        }.joined(separator: " or ")
         var components = URLComponents(url: AppConfig.driveAPIBase.appendingPathComponent("files"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
-            URLQueryItem(name: "q", value: "name contains '\(escaped)' and trashed = false and sharedWithMe = true"),
+            URLQueryItem(
+                name: "q",
+                value: "name contains '\(escaped)' and trashed = false and (\(scope))"
+            ),
             URLQueryItem(name: "pageSize", value: "50"),
             URLQueryItem(name: "fields", value: "files(id,name,mimeType,size,modifiedTime,md5Checksum,parents,shortcutDetails(targetId,targetMimeType))"),
             URLQueryItem(name: "supportsAllDrives", value: "true"),
             URLQueryItem(name: "includeItemsFromAllDrives", value: "true"),
+            URLQueryItem(name: "corpora", value: "allDrives"),
         ]
         let json = try await getJSON(url: components.url!)
-        var files = (json["files"] as? [[String: Any]] ?? []).compactMap(Self.parseItem)
-        if !boundFolderIDs.isEmpty {
-            files = files.filter { item in
-                boundFolderIDs.contains(item.id)
-                    || !boundFolderIDs.isDisjoint(with: Set(item.parentIDs))
-            }
+        let files = (json["files"] as? [[String: Any]] ?? []).compactMap(Self.parseItem)
+        return files.filter { item in
+            ids.contains(item.id) || !Set(ids).isDisjoint(with: Set(item.parentIDs))
         }
-        return files
+    }
+
+    private func countChildren(parentID: String) async throws -> (count: Int, capped: Bool) {
+        var total = 0
+        var pageToken: String?
+        var pages = 0
+        let pageSize = 1000
+        let maxPages = 10
+        while pages < maxPages {
+            var components = URLComponents(
+                url: AppConfig.driveAPIBase.appendingPathComponent("files"),
+                resolvingAgainstBaseURL: false
+            )!
+            var items: [URLQueryItem] = [
+                URLQueryItem(
+                    name: "q",
+                    value: "'\(Self.escapeQuery(parentID))' in parents and trashed = false"
+                ),
+                URLQueryItem(name: "pageSize", value: String(pageSize)),
+                URLQueryItem(name: "fields", value: "nextPageToken,files(id)"),
+                URLQueryItem(name: "supportsAllDrives", value: "true"),
+                URLQueryItem(name: "includeItemsFromAllDrives", value: "true"),
+                URLQueryItem(name: "corpora", value: "allDrives"),
+            ]
+            if let pageToken {
+                items.append(URLQueryItem(name: "pageToken", value: pageToken))
+            }
+            components.queryItems = items
+            let json = try await getJSON(url: components.url!)
+            let files = json["files"] as? [[String: Any]] ?? []
+            total += files.count
+            pages += 1
+            guard let next = json["nextPageToken"] as? String, !next.isEmpty else {
+                return (total, false)
+            }
+            pageToken = next
+        }
+        return (total, true)
+    }
+
+    private static func escapeQuery(_ value: String) -> String {
+        value.replacingOccurrences(of: "'", with: "\\'")
     }
 
     private func boundCacheSuffix(_ bound: Set<String>?) -> String {

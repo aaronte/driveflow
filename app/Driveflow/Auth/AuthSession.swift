@@ -15,6 +15,7 @@ final class AuthSession: NSObject, ObservableObject {
     private let refreshAccount = "google.refresh"
     private let emailAccount = "google.email"
     private let expiryAccount = "google.expiry"
+    private let idTokenAccount = "google.id_token"
     private let signInTimeoutSeconds: TimeInterval = 180
 
     private static let formAllowedCharacters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
@@ -175,6 +176,28 @@ final class AuthSession: NSObject, ObservableObject {
         }
     }
 
+    /// Google OpenID Connect ID token from the Desktop sign-in (`openid email`).
+    /// Refreshes the grant when the stored token is missing or near expiry.
+    /// Sent to the share-mint server as `Authorization: Bearer`.
+    func validIDToken() async throws -> String {
+        if let token = try CredentialStore.get(account: idTokenAccount),
+           GoogleIDToken.isFresh(token) {
+            return token
+        }
+        guard let refresh = try CredentialStore.get(account: refreshAccount), !refresh.isEmpty else {
+            throw AppError.tokenExpired
+        }
+        try await refreshAccessToken(using: refresh)
+        guard let token = try CredentialStore.get(account: idTokenAccount),
+              GoogleIDToken.isFresh(token)
+        else {
+            throw AppError.authFailed(
+                "Google didn’t return an ID token. Sign in again so Driveflow can verify your account."
+            )
+        }
+        return token
+    }
+
     func validAccessToken() async throws -> String {
         if let expiryString = try CredentialStore.get(account: expiryAccount),
            let expiry = TimeInterval(expiryString),
@@ -255,6 +278,14 @@ final class AuthSession: NSObject, ObservableObject {
         let expiresIn = (json["expires_in"] as? Double) ?? 3600
         let expiry = Date().timeIntervalSince1970 + expiresIn
         try CredentialStore.set(String(expiry), account: expiryAccount)
+        // Both the authorization-code exchange and refresh-token grant land here.
+        // Keep the previous ID token when a refresh response omits a new one.
+        if let idToken = json["id_token"] as? String {
+            let trimmed = idToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                try CredentialStore.set(trimmed, account: idTokenAccount)
+            }
+        }
     }
 
     private func fetchUserInfo() async throws {
@@ -303,6 +334,7 @@ final class AuthSession: NSObject, ObservableObject {
         CredentialStore.delete(account: refreshAccount)
         CredentialStore.delete(account: emailAccount)
         CredentialStore.delete(account: expiryAccount)
+        CredentialStore.delete(account: idTokenAccount)
     }
 
     /// Best-effort remote revoke; local sign-out must not fail if offline.

@@ -75,7 +75,24 @@ enum DriveRoot: String, CaseIterable, Identifiable {
         case .sharedDrives: return "Shared drives"
         }
     }
+}
 
-    /// Roots shown in the share-email browse flow (SA My Drive is empty / unused).
-    static var shareBrowseRoots: [DriveRoot] { [.sharedWithMe] }
+/// Virtual root above the folders a buyer has shared with Driveflow.
+enum BoundFolderBrowse {
+    static let rootCrumbID = "shared-with-driveflow"
+    static let rootTitle = "Shared with Driveflow"
+}
+
+struct BoundFolderSummary: Identifiable, Hashable, Sendable {
+    let id: String
+    var name: String
+    var itemCount: Int?
+    var itemCountIsLowerBound: Bool
+
+    var itemCountLabel: String? {
+        guard let itemCount else { return nil }
+        let formatted = itemCount.formatted(.number.grouping(.automatic))
+        if itemCountIsLowerBound { return "\(formatted)+" }
+        return formatted
+    }
 }

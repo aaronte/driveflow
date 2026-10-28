@@ -3,11 +3,12 @@ import SwiftUI
 
 @MainActor
 final class DriveBrowserModel: ObservableObject {
-    @Published var root: DriveRoot = .sharedWithMe
     @Published private(set) var breadcrumbs: [DriveBreadcrumb] = [
-        DriveBreadcrumb(id: "root", name: DriveRoot.sharedWithMe.title)
+        DriveBreadcrumb(id: BoundFolderBrowse.rootCrumbID, name: BoundFolderBrowse.rootTitle)
     ]
     @Published private(set) var items: [DriveItem] = []
+    @Published private(set) var boundFolders: [BoundFolderSummary] = []
+    @Published private(set) var selectedFolderID: String?
     @Published private(set) var isLoading = false
     @Published private(set) var isLoadingMore = false
     @Published var selectedIDs: Set<String> = []
@@ -37,17 +38,66 @@ final class DriveBrowserModel: ObservableObject {
     }
 
     func bootstrap() async {
-        root = .sharedWithMe
-        breadcrumbs = [DriveBreadcrumb(id: "root", name: root.title)]
-        await reload()
+        await reloadBoundFolders(preferredID: driveAccess?.preferredFolderID)
     }
 
-    func switchRoot(_ newRoot: DriveRoot) async {
-        // Share-email flow only exposes Shared with me.
-        guard DriveRoot.shareBrowseRoots.contains(newRoot) else { return }
-        root = newRoot
+    func reloadBoundFolders(preferredID: String?) async {
+        let records = driveAccess?.orderedBoundFolders() ?? []
+        boundFolders = records.map { record in
+            BoundFolderSummary(
+                id: record.id,
+                name: record.name ?? "Shared folder",
+                itemCount: nil,
+                itemCountIsLowerBound: false
+            )
+        }
+        let selection = preferredID.flatMap { id in
+            boundFolders.contains(where: { $0.id == id }) ? id : nil
+        } ?? selectedFolderID.flatMap { id in
+            boundFolders.contains(where: { $0.id == id }) ? id : nil
+        } ?? boundFolders.first?.id
+
+        if let selection {
+            await showBoundFolder(selection, resetStack: true)
+        } else {
+            selectedFolderID = nil
+            items = []
+            breadcrumbs = [
+                DriveBreadcrumb(id: BoundFolderBrowse.rootCrumbID, name: BoundFolderBrowse.rootTitle)
+            ]
+        }
+
+        for record in records {
+            do {
+                let summary = try await client.folderSummary(id: record.id)
+                if let index = boundFolders.firstIndex(where: { $0.id == record.id }) {
+                    boundFolders[index] = summary
+                }
+                driveAccess?.rememberFolderName(id: summary.id, name: summary.name)
+                if selectedFolderID == record.id,
+                   breadcrumbs.count >= 2,
+                   breadcrumbs[1].id == record.id {
+                    breadcrumbs[1] = DriveBreadcrumb(id: record.id, name: summary.name)
+                }
+            } catch {
+                // Keep the stored name until Drive answers.
+            }
+        }
+    }
+
+    func showBoundFolder(_ id: String, resetStack: Bool) async {
+        let known = boundFolders.contains(where: { $0.id == id }) || boundFolderIDs.contains(id)
+        guard known else { return }
+        let name = boundFolders.first(where: { $0.id == id })?.name ?? "Shared folder"
+        selectedFolderID = id
+        if resetStack || breadcrumbs.last?.id != id {
+            breadcrumbs = [
+                DriveBreadcrumb(id: BoundFolderBrowse.rootCrumbID, name: BoundFolderBrowse.rootTitle),
+                DriveBreadcrumb(id: id, name: name),
+            ]
+        }
+        searchText = ""
         selectedIDs.removeAll()
-        breadcrumbs = [DriveBreadcrumb(id: "root", name: newRoot.title)]
         await reload()
     }
 
@@ -56,11 +106,14 @@ final class DriveBrowserModel: ObservableObject {
         lastError = nil
         nextPageToken = nil
         defer { isLoading = false }
+        guard let parent = listParentID else {
+            items = []
+            return
+        }
         do {
-            let parent = breadcrumbs.count > 1 ? breadcrumbs.last?.id : nil
             let result = try await client.list(
-                parentID: parent == "root" ? nil : parent,
-                root: root,
+                parentID: parent,
+                root: .sharedWithMe,
                 boundFolderIDs: boundFolderIDs
             )
             items = result.items
@@ -76,13 +129,13 @@ final class DriveBrowserModel: ObservableObject {
 
     func loadMoreIfNeeded(current item: DriveItem) async {
         guard let nextPageToken, !isLoadingMore, items.last?.id == item.id else { return }
+        guard let parent = listParentID else { return }
         isLoadingMore = true
         defer { isLoadingMore = false }
         do {
-            let parent = breadcrumbs.count > 1 ? breadcrumbs.last?.id : nil
             let result = try await client.list(
-                parentID: parent == "root" ? nil : parent,
-                root: root,
+                parentID: parent,
+                root: .sharedWithMe,
                 pageToken: nextPageToken,
                 boundFolderIDs: boundFolderIDs
             )
@@ -101,7 +154,12 @@ final class DriveBrowserModel: ObservableObject {
     }
 
     func goToBreadcrumb(_ crumb: DriveBreadcrumb) async {
-        guard let index = breadcrumbs.firstIndex(of: crumb) else { return }
+        if crumb.id == BoundFolderBrowse.rootCrumbID {
+            guard let folderID = selectedFolderID else { return }
+            await showBoundFolder(folderID, resetStack: true)
+            return
+        }
+        guard let index = breadcrumbs.firstIndex(of: crumb), index > 0 else { return }
         breadcrumbs = Array(breadcrumbs.prefix(index + 1))
         selectedIDs.removeAll()
         await reload()
@@ -123,11 +181,14 @@ final class DriveBrowserModel: ObservableObject {
     func resetForSignOut() {
         selectedIDs.removeAll()
         items = []
+        boundFolders = []
+        selectedFolderID = nil
         searchText = ""
         nextPageToken = nil
         lastError = nil
-        root = .sharedWithMe
-        breadcrumbs = [DriveBreadcrumb(id: "root", name: root.title)]
+        breadcrumbs = [
+            DriveBreadcrumb(id: BoundFolderBrowse.rootCrumbID, name: BoundFolderBrowse.rootTitle)
+        ]
     }
 
     func runSearch() {
@@ -150,5 +211,12 @@ final class DriveBrowserModel: ObservableObject {
                 lastError = .driveAPI(error.localizedDescription)
             }
         }
+    }
+
+    private var listParentID: String? {
+        guard let last = breadcrumbs.last, last.id != BoundFolderBrowse.rootCrumbID else {
+            return nil
+        }
+        return last.id
     }
 }

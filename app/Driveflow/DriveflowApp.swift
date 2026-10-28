@@ -33,6 +33,9 @@ final class AppState: ObservableObject {
     init() {
         let auth = AuthSession()
         let driveAccess = DriveAccessSession()
+        driveAccess.idTokenProvider = {
+            try await auth.validIDToken()
+        }
         let drive = DriveClient(tokenProvider: driveAccess)
         self.auth = auth
         self.driveAccess = driveAccess

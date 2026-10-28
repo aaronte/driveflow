@@ -87,24 +87,38 @@ enum AppConfig {
         return URL(string: "https://usedriveflow.app/api/license/check")!
     }
 
-    /// Optional share-session mint endpoint.
+    /// Production share-session mint endpoint (`POST`, Bearer Google ID token).
+    static let productionShareMintURL = URL(string: "https://usedriveflow.app/api/drive/session")!
+
+    /// Share-session mint endpoint.
     ///
-    /// `POST { "email": "<buyer email>" }` →
-    /// `{ "shareEmail", "accessToken", "expiresIn" }` (or `expiresAt` unix seconds).
-    ///
-    /// When unset, the app falls back to a local/dev service-account key or
-    /// `DRIVEFLOW_SHARE_ACCESS_TOKEN` + `DRIVEFLOW_SHARE_EMAIL`.
-    /// Override with `DRIVEFLOW_SHARE_MINT_URL`.
+    /// Release builds default to `productionShareMintURL`. Debug builds leave it
+    /// unset so a local service-account key or env token can be used.
+    /// `DRIVEFLOW_SHARE_MINT_URL` overrides both.
     static var shareMintURL: URL? {
-        if let raw = ProcessInfo.processInfo.environment["DRIVEFLOW_SHARE_MINT_URL"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
+        resolvedShareMintURL(
+            environmentOverride: ProcessInfo.processInfo.environment["DRIVEFLOW_SHARE_MINT_URL"],
+            isReleaseBuild: isReleaseBuild
+        )
+    }
+
+    static var isReleaseBuild: Bool {
+        #if DEBUG
+        return false
+        #else
+        return true
+        #endif
+    }
+
+    static func resolvedShareMintURL(environmentOverride: String?, isReleaseBuild: Bool) -> URL? {
+        if let raw = environmentOverride?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty,
-           let url = URL(string: raw) {
+           let url = URL(string: raw),
+           url.scheme == "https" || url.scheme == "http" {
             return url
         }
-        // Default production mint lives next to license check when the backend is ready.
-        // Until then, leave nil so local SA key / env token paths work without a 404.
-        return nil
+        guard isReleaseBuild else { return nil }
+        return productionShareMintURL
     }
 
     /// Public share-target email override for display when minting from an env token.

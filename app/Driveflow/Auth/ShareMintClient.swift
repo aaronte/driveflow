@@ -3,10 +3,14 @@ import Security
 
 /// Mints short-lived Drive access tokens for a service-account principal.
 ///
-/// Resolution order (first success wins):
-/// 1. Mint HTTP API (`DRIVEFLOW_SHARE_MINT_URL` or extended license response path)
+/// Resolution order inside `mint` (first success wins):
+/// 1. Mint HTTP API when a share mint URL is set (release default or
+///    `DRIVEFLOW_SHARE_MINT_URL`). The buyer’s Google ID token is sent as
+///    `Authorization: Bearer` and as JSON `idToken`. Failures do not fall through.
 /// 2. Local service-account JSON (dev only — never ship keys in the app bundle)
 /// 3. Explicit env token (`DRIVEFLOW_SHARE_ACCESS_TOKEN` + `DRIVEFLOW_SHARE_EMAIL`)
+///
+/// An extended license-check payload is applied by `DriveAccessSession`, not here.
 enum ShareMintClient {
     struct Session: Sendable {
         let shareEmail: String
@@ -21,10 +25,21 @@ enum ShareMintClient {
         let expiresAt: Double?
     }
 
-    /// Request a share session for the purchasing Google account.
-    static func mint(buyerEmail: String) async throws -> Session {
-        if let session = try await mintFromAPI(buyerEmail: buyerEmail) {
-            return session
+    /// Request a share session for the signed-in buyer.
+    ///
+    /// When a mint URL is set, `googleIDToken` is sent as `Authorization: Bearer`
+    /// and as JSON `{ "idToken" }` (no email). The mint server verifies that ID
+    /// token. Dev fallbacks (local SA JSON, env token) run only when the mint
+    /// URL is unset.
+    static func mint(googleIDToken: String?) async throws -> Session {
+        if AppConfig.shareMintURL != nil {
+            let token = googleIDToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !token.isEmpty else {
+                throw AppError.authFailed(
+                    "Sign in again so Driveflow can verify your Google account before opening Drive."
+                )
+            }
+            return try await mintFromAPI(idToken: token)
         }
         if let session = try await mintFromLocalServiceAccount() {
             return session
@@ -33,6 +48,91 @@ enum ShareMintClient {
             return session
         }
         throw AppError.shareAccessNotConfigured
+    }
+
+    /// How the mint server told us to proceed. `500` is mint failure; other 5xx stay `.other`.
+    enum HTTPOutcome: Equatable {
+        case success
+        case reauthenticate
+        case unpaid
+        case retry
+        case mintFailed
+        case other
+    }
+
+    static let maxRateLimitRetries = 3
+
+    static func httpOutcome(for statusCode: Int) -> HTTPOutcome {
+        switch statusCode {
+        case 200..<300:
+            return .success
+        case 401:
+            return .reauthenticate
+        case 402:
+            return .unpaid
+        case 429:
+            return .retry
+        case 500:
+            return .mintFailed
+        default:
+            return .other
+        }
+    }
+
+    /// Delay before another attempt after HTTP 429. `Retry-After` wins (capped);
+    /// otherwise 1s, 2s, 4s, …
+    static func retryDelaySeconds(attempt: Int, retryAfterHeader: String?, now: Date = Date()) -> TimeInterval {
+        if let header = retryAfterHeader?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !header.isEmpty {
+            if let seconds = TimeInterval(header), seconds >= 0 {
+                return min(seconds, 30)
+            }
+            if let date = retryAfterDate(header), date > now {
+                return min(date.timeIntervalSince(now), 30)
+            }
+        }
+        let exponential = pow(2.0, Double(max(0, attempt)))
+        return min(exponential, 30)
+    }
+
+    /// Production mint request.
+    ///
+    /// `Authorization: Bearer <id_token>` and body `{ "idToken": "<id_token>" }`.
+    /// `email` is omitted; the server accepts it only when it matches the token.
+    static func mintRequest(url: URL, googleIDToken: String) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(googleIDToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 20
+        let payload = ["idToken": googleIDToken]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        return request
+    }
+
+    /// Decode `{ shareEmail, accessToken, expiresIn, expiresAt }`.
+    /// `expiresAt` is unix seconds and wins when both fields are present.
+    static func session(fromMintData data: Data, now: Date = Date()) throws -> Session {
+        let decoded: MintAPIResponse
+        do {
+            decoded = try JSONDecoder().decode(MintAPIResponse.self, from: data)
+        } catch {
+            throw AppError.network("Share mint response was missing shareEmail/accessToken.")
+        }
+        let shareEmail = decoded.shareEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let accessToken = decoded.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !shareEmail.isEmpty, !accessToken.isEmpty else {
+            throw AppError.network("Share mint response was missing shareEmail/accessToken.")
+        }
+        let expiresAt: Date
+        if let expiresAtEpoch = decoded.expiresAt {
+            expiresAt = Date(timeIntervalSince1970: expiresAtEpoch)
+        } else if let expiresIn = decoded.expiresIn {
+            expiresAt = now.addingTimeInterval(expiresIn)
+        } else {
+            throw AppError.network("Share mint response was missing expiresAt.")
+        }
+        return Session(shareEmail: shareEmail, accessToken: accessToken, expiresAt: expiresAt)
     }
 
     /// Parse an optional share block from an extended license-check payload.
@@ -58,44 +158,49 @@ enum ShareMintClient {
 
     // MARK: - Mint API
 
-    private static func mintFromAPI(buyerEmail: String) async throws -> Session? {
-        guard let url = AppConfig.shareMintURL else { return nil }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 20
-        let payload: [String: Any] = ["email": buyerEmail]
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw AppError.network("No response from share mint server.")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
-            throw AppError.network("Share mint failed (HTTP \(http.statusCode)). \(body)")
+    private static func mintFromAPI(idToken: String) async throws -> Session {
+        guard let url = AppConfig.shareMintURL else {
+            throw AppError.shareAccessNotConfigured
         }
 
-        // Accept either the dedicated mint shape or the extended license shape.
-        if let decoded = try? JSONDecoder().decode(MintAPIResponse.self, from: data) {
-            let expiresAt: Date
-            if let expiresAtEpoch = decoded.expiresAt {
-                expiresAt = Date(timeIntervalSince1970: expiresAtEpoch)
-            } else {
-                expiresAt = Date().addingTimeInterval(decoded.expiresIn ?? 3600)
+        var rateLimitRetries = 0
+        while true {
+            let request = mintRequest(url: url, googleIDToken: idToken)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw AppError.network("No response from share mint server.")
             }
-            return Session(
-                shareEmail: decoded.shareEmail,
-                accessToken: decoded.accessToken,
-                expiresAt: expiresAt
-            )
+            switch httpOutcome(for: http.statusCode) {
+            case .success:
+                return try session(fromMintData: data)
+            case .retry where rateLimitRetries < maxRateLimitRetries:
+                let delay = retryDelaySeconds(
+                    attempt: rateLimitRetries,
+                    retryAfterHeader: http.value(forHTTPHeaderField: "Retry-After")
+                )
+                rateLimitRetries += 1
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            case .retry:
+                throw AppError.shareMintRateLimited
+            case .reauthenticate:
+                throw AppError.shareMintUnauthorized
+            case .unpaid:
+                throw AppError.licenseRequired(email: nil)
+            case .mintFailed:
+                throw AppError.shareMintFailed
+            case .other:
+                let body = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+                throw AppError.network("Share mint failed (HTTP \(http.statusCode)). \(body)")
+            }
         }
-        let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
-        if let session = session(fromLicenseJSON: json) {
-            return session
-        }
-        throw AppError.network("Share mint response was missing shareEmail/accessToken.")
+    }
+
+    private static func retryAfterDate(_ header: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return formatter.date(from: header)
     }
 
     // MARK: - Env token (dev)

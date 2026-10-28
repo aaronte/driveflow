@@ -141,14 +141,20 @@ struct GhostButtonStyle: ButtonStyle {
 /// Sidebar / nav row — hover wash, selected stone fill, press settle.
 struct NavRowButtonStyle: ButtonStyle {
     var isSelected: Bool
+    var selectionFill: Color = DriveflowTheme.stone.opacity(0.85)
 
     func makeBody(configuration: Configuration) -> some View {
-        NavRowBody(configuration: configuration, isSelected: isSelected)
+        NavRowBody(
+            configuration: configuration,
+            isSelected: isSelected,
+            selectionFill: selectionFill
+        )
     }
 
     private struct NavRowBody: View {
         let configuration: ButtonStyle.Configuration
         let isSelected: Bool
+        let selectionFill: Color
         @State private var hovering = false
 
         var body: some View {
@@ -167,7 +173,7 @@ struct NavRowButtonStyle: ButtonStyle {
         }
 
         private var fill: Color {
-            if isSelected { return DriveflowTheme.stone.opacity(0.85) }
+            if isSelected { return selectionFill }
             if configuration.isPressed { return DriveflowTheme.stone.opacity(0.55) }
             if hovering { return DriveflowTheme.stone.opacity(0.4) }
             return .clear
