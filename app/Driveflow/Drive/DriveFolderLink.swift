@@ -1,17 +1,49 @@
 import Foundation
 
+struct FolderID: Hashable, Sendable, Codable, Equatable {
+    let raw: String
+
+    init?(_ raw: String) {
+        guard Self.isValid(raw) else { return nil }
+        self.raw = raw
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        guard let id = FolderID(raw) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid Drive folder id"
+            )
+        }
+        self = id
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(raw)
+    }
+
+    private static let characters = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    )
+
+    private static func isValid(_ raw: String) -> Bool {
+        guard (10...128).contains(raw.count) else { return false }
+        return raw.unicodeScalars.allSatisfy { characters.contains($0) }
+    }
+}
+
 /// A recognized link is only an ID. The folder name needs service-account access.
 enum DriveFolderLink {
     enum Status: Equatable {
         case empty
-        case recognized(folderID: String)
+        case recognized(folderID: FolderID)
         case fileLink
         case unrecognized
     }
 
-    private static let folderIDCharacters = CharacterSet(
-        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-    )
     private static let filePathMarkers = [
         "/file/d/",
         "/document/d/",
@@ -27,15 +59,10 @@ enum DriveFolderLink {
         "/embeddedfolderview",
     ]
 
-    static func isFolderID(_ raw: String) -> Bool {
-        guard (10...128).contains(raw.count) else { return false }
-        return raw.unicodeScalars.allSatisfy { folderIDCharacters.contains($0) }
-    }
-
     static func interpret(_ raw: String) -> Status {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return .empty }
-        if isFolderID(trimmed) { return .recognized(folderID: trimmed) }
+        if let folderID = FolderID(trimmed) { return .recognized(folderID: folderID) }
 
         var candidate = trimmed
         if !candidate.contains("://"),
@@ -60,29 +87,30 @@ enum DriveFolderLink {
         }
         if idQueryPaths.contains(path),
            let id = components.queryItems?.first(where: { $0.name == "id" })?.value,
-           isFolderID(id) {
-            return .recognized(folderID: id)
+           let folderID = FolderID(id) {
+            return .recognized(folderID: folderID)
         }
         return .unrecognized
     }
 
-    static func sharingURL(folderID: String) -> URL? {
-        guard isFolderID(folderID) else { return nil }
+    static func sharingURL(folderID: FolderID) -> URL {
         var components = URLComponents()
         components.scheme = "https"
         components.host = "drive.google.com"
-        components.path = "/drive/folders/\(folderID)"
-        return components.url
+        components.path = "/drive/folders/\(folderID.raw)"
+        guard let url = components.url else {
+            preconditionFailure("FolderID characters are URL-safe")
+        }
+        return url
     }
 
-    private static func folderID(inPath path: String) -> String? {
+    private static func folderID(inPath path: String) -> FolderID? {
         let parts = path.split(separator: "/").map(String.init)
         guard let index = parts.lastIndex(of: "folders"),
               parts.indices.contains(index + 1)
         else {
             return nil
         }
-        let id = parts[index + 1]
-        return isFolderID(id) ? id : nil
+        return FolderID(parts[index + 1])
     }
 }

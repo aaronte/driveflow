@@ -24,7 +24,11 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
 
     private var buyerEmail: String?
     private var pollTask: Task<Void, Never>?
-    private var didRefreshForPoll = false
+    private var pollSerial = 0
+    private var refreshTask: Task<Void, Error>?
+    private var refreshSerial = 0
+    private var epoch = 0
+    private var unauthorizedRetry = UnauthorizedRetry()
     private let pollIntervalNanoseconds: UInt64 = 3_000_000_000
 
     var hasShareEmail: Bool { shareEmail?.isEmpty == false }
@@ -42,11 +46,13 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         do {
             try await refreshShareSession(buyerEmail: buyerEmail)
         } catch let error as AppError {
+            guard self.buyerEmail != nil else { return }
             lastError = error
             if boundFolderIDs.isEmpty {
                 isReady = false
             }
         } catch {
+            guard self.buyerEmail != nil else { return }
             lastError = .network(error.localizedDescription)
             if boundFolderIDs.isEmpty {
                 isReady = false
@@ -69,15 +75,51 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
     }
 
     func refreshShareSession(buyerEmail: String) async throws {
+        let started = epoch
+        if let existing = refreshTask {
+            try await awaitRefresh(existing, started: started)
+            return
+        }
+        let serial = refreshSerial
+        let task = Task { @MainActor in
+            try await self.performRefresh(buyerEmail: buyerEmail, epochAtStart: started)
+        }
+        refreshTask = task
+        defer {
+            if refreshSerial == serial {
+                refreshTask = nil
+            }
+        }
+        try await awaitRefresh(task, started: started)
+    }
+
+    private func awaitRefresh(_ task: Task<Void, Error>, started: Int) async throws {
+        do {
+            try await task.value
+        } catch is CancellationError {
+            guard epoch == started else { return }
+            throw CancellationError()
+        }
+    }
+
+    private func performRefresh(buyerEmail: String, epochAtStart: Int) async throws {
+        guard epoch == epochAtStart else { return }
         isBusy = true
-        defer { isBusy = false }
+        defer {
+            if epoch == epochAtStart {
+                isBusy = false
+            }
+        }
         do {
             let idToken = try await googleIDTokenForMint()
+            guard epoch == epochAtStart else { return }
             let session = try await ShareMintClient.mint(googleIDToken: idToken)
+            guard epoch == epochAtStart else { return }
             try persist(session: session, buyerEmail: buyerEmail)
             shareEmail = session.shareEmail
             self.buyerEmail = buyerEmail
         } catch let error as AppError {
+            guard epoch == epochAtStart else { return }
             let surfaced = Self.surfacing(error, buyerEmail: buyerEmail)
             if surfaced.requiresSignInAgain {
                 authenticationFailure = surfaced
@@ -100,7 +142,7 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         mutateOnboarding { $0.setLink(raw) }
         if onboarding.isWaiting {
             if onboarding.pollTargetID != previousTarget || !wasWaiting {
-                didRefreshForPoll = false
+                unauthorizedRetry.clear()
                 startPolling()
             }
         } else if wasWaiting {
@@ -114,19 +156,17 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         NSPasteboard.general.setString(shareEmail, forType: .string)
         mutateOnboarding { $0.copyTapped() }
         if onboarding.isWaiting {
-            didRefreshForPoll = false
+            unauthorizedRetry.clear()
             startPolling()
         }
     }
 
     func openSharingInDrive() {
-        guard let folderID = onboarding.recognizedFolderID,
-              let url = DriveFolderLink.sharingURL(folderID: folderID)
-        else { return }
-        NSWorkspace.shared.open(url)
+        guard let folderID = onboarding.recognizedFolderID else { return }
+        NSWorkspace.shared.open(DriveFolderLink.sharingURL(folderID: folderID))
         mutateOnboarding { $0.openSharingTapped() }
         if onboarding.isWaiting {
-            didRefreshForPoll = false
+            unauthorizedRetry.clear()
             startPolling()
         }
     }
@@ -139,7 +179,7 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
     func presentAddFolder() {
         isPresentingAddFolder = true
         lastError = nil
-        didRefreshForPoll = false
+        unauthorizedRetry.clear()
         mutateOnboarding { $0.resetForNewFolder() }
         stopPolling()
     }
@@ -158,16 +198,17 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
     }
 
     func rememberFolderName(id: String, name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let buyerEmail, !trimmed.isEmpty else { return }
-        var records = BoundFolderStore.loadOrdered(buyerEmail: buyerEmail)
-        guard let index = records.firstIndex(where: { $0.id == id }) else { return }
-        guard records[index].name != trimmed else { return }
-        records[index].name = trimmed
-        BoundFolderStore.save(records, buyerEmail: buyerEmail)
+        guard let buyerEmail, let folderID = FolderID(id) else { return }
+        BoundFolderStore.updateName(id: folderID, name: name, buyerEmail: buyerEmail)
     }
 
     func clear() {
+        epoch += 1
+        refreshSerial += 1
+        refreshTask?.cancel()
+        refreshTask = nil
+        unauthorizedRetry.clear()
+        isBusy = false
         stopPolling()
         // Bound folders stay on disk per buyer email so re-sign-in keeps them.
         CredentialStore.delete(account: accessAccount)
@@ -247,7 +288,7 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
             return
         }
         let records = BoundFolderStore.loadOrdered(buyerEmail: buyerEmail)
-        boundFolderIDs = Set(records.map(\.id))
+        boundFolderIDs = Set(records.map(\.id.raw))
         isReady = !boundFolderIDs.isEmpty
     }
 
@@ -261,36 +302,43 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
     private func startPolling() {
         guard onboarding.pollTargetID != nil else { return }
         lastError = nil
+        pollSerial += 1
+        let serial = pollSerial
         pollTask?.cancel()
         pollTask = Task { [weak self] in
-            await self?.pollForFolderAccess()
+            await self?.pollForFolderAccess(serial: serial)
         }
     }
 
     private func stopPolling() {
+        pollSerial += 1
         pollTask?.cancel()
         pollTask = nil
     }
 
-    private func pollForFolderAccess() async {
-        while !Task.isCancelled {
+    private func pollForFolderAccess(serial: Int) async {
+        while !Task.isCancelled, pollSerial == serial {
             guard let folderID = onboarding.pollTargetID else { return }
             let probe = await probeFolder(id: folderID)
-            if Task.isCancelled { return }
+            guard !Task.isCancelled, pollSerial == serial else { return }
             guard onboarding.pollTargetID == folderID else { continue }
 
             let action = applyProbe(probe)
+            guard !Task.isCancelled, pollSerial == serial else { return }
             switch action {
             case .idle:
                 return
             case .pollAgain:
-                break
+                unauthorizedRetry.clear()
             case .refreshToken:
-                if await refreshTokenForPoll() == false {
-                    return
+                if unauthorizedRetry.shouldRefresh {
+                    unauthorizedRetry.markRefreshed()
+                    if await refreshTokenForPoll() == false {
+                        return
+                    }
                 }
-            case .bind(let id):
-                let name = onboarding.boundNames[id]
+            case .bind(let id, let name):
+                guard buyerEmail != nil, pollSerial == serial else { return }
                 commitBind(id: id, name: name)
                 return
             case .showNotAFolder:
@@ -298,7 +346,11 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
                 stopPolling()
                 return
             }
-            try? await Task.sleep(nanoseconds: pollIntervalNanoseconds)
+            do {
+                try await Task.sleep(nanoseconds: pollIntervalNanoseconds)
+            } catch {
+                return
+            }
         }
     }
 
@@ -310,18 +362,18 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
     }
 
     private func refreshTokenForPoll() async -> Bool {
-        guard !didRefreshForPoll else { return true }
-        didRefreshForPoll = true
         guard let buyerEmail else { return false }
         do {
             try await refreshShareSession(buyerEmail: buyerEmail)
             return onboarding.isWaiting
         } catch let error as AppError {
+            guard self.buyerEmail != nil else { return false }
             lastError = error
             mutateOnboarding { $0.cancelWaiting() }
             stopPolling()
             return false
         } catch {
+            guard self.buyerEmail != nil else { return false }
             lastError = .network(error.localizedDescription)
             mutateOnboarding { $0.cancelWaiting() }
             stopPolling()
@@ -329,25 +381,22 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         }
     }
 
-    private func commitBind(id: String, name: String?) {
+    private func commitBind(id: FolderID, name: String) {
         guard let buyerEmail else { return }
-        var records = BoundFolderStore.loadOrdered(buyerEmail: buyerEmail)
-        if let index = records.firstIndex(where: { $0.id == id }) {
-            if let name, !name.isEmpty {
-                records[index].name = name
-            }
-        } else {
-            records.append(BoundFolderRecord(id: id, name: name))
-        }
-        BoundFolderStore.save(records, buyerEmail: buyerEmail)
-        boundFolderIDs = Set(records.map(\.id))
-        preferredFolderID = id
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        BoundFolderStore.bind(
+            BoundFolderRecord(id: id, name: trimmed.isEmpty ? nil : trimmed),
+            buyerEmail: buyerEmail
+        )
+        let records = BoundFolderStore.loadOrdered(buyerEmail: buyerEmail)
+        boundFolderIDs = Set(records.map(\.id.raw))
+        preferredFolderID = id.raw
         isReady = true
         isPresentingAddFolder = false
         stopPolling()
     }
 
-    private func probeFolder(id: String) async -> FolderProbe {
+    private func probeFolder(id: FolderID) async -> FolderProbe {
         do {
             let token = try await validAccessToken()
             guard let url = filesGetURL(folderID: id) else { return .notReadableYet }
@@ -362,11 +411,11 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         }
     }
 
-    private func filesGetURL(folderID: String) -> URL? {
+    private func filesGetURL(folderID: FolderID) -> URL? {
         guard var components = URLComponents(
             url: AppConfig.driveAPIBase
                 .appendingPathComponent("files")
-                .appendingPathComponent(folderID),
+                .appendingPathComponent(folderID.raw),
             resolvingAgainstBaseURL: false
         ) else { return nil }
         components.queryItems = [

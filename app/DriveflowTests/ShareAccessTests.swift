@@ -4,6 +4,8 @@ import XCTest
 final class ShareAccessTests: XCTestCase {
     private let folderID = "1AbC9xQ2kLm7RtVz-4hJpW0sYeN3uF"
     private let shortcutTargetID = "1ZzQ9xQ2kLm7RtVz-4hJpW0sYeN3uF"
+    private var folder: FolderID { FolderID(folderID)! }
+    private var shortcutTarget: FolderID { FolderID(shortcutTargetID)! }
 
     func testParsesCommonFolderLinks() {
         let samples = [
@@ -25,7 +27,7 @@ final class ShareAccessTests: XCTestCase {
         for sample in samples {
             XCTAssertEqual(
                 DriveFolderLink.interpret(sample),
-                .recognized(folderID: folderID),
+                .recognized(folderID: folder),
                 sample
             )
         }
@@ -61,23 +63,23 @@ final class ShareAccessTests: XCTestCase {
 
     func testSharingURLUsesPastedFolderID() {
         XCTAssertEqual(
-            DriveFolderLink.sharingURL(folderID: folderID)?.absoluteString,
+            DriveFolderLink.sharingURL(folderID: folder).absoluteString,
             "https://drive.google.com/drive/folders/\(folderID)"
         )
-        XCTAssertNil(DriveFolderLink.sharingURL(folderID: "not an id"))
+        XCTAssertNil(FolderID("not an id"))
     }
 
     func testProbeKeepsWaitingWhenTheFolderIsNotSharedYet() {
         XCTAssertEqual(
-            DriveFolderAccess.interpret(statusCode: 404, body: ["error": "notFound"], pastedID: folderID),
+            DriveFolderAccess.interpret(statusCode: 404, body: ["error": "notFound"], pastedID: folder),
             .notReadableYet
         )
         XCTAssertEqual(
-            DriveFolderAccess.interpret(statusCode: 403, body: nil, pastedID: folderID),
+            DriveFolderAccess.interpret(statusCode: 403, body: nil, pastedID: folder),
             .notReadableYet
         )
         XCTAssertEqual(
-            DriveFolderAccess.interpret(statusCode: 500, body: nil, pastedID: folderID),
+            DriveFolderAccess.interpret(statusCode: 500, body: nil, pastedID: folder),
             .notReadableYet
         )
     }
@@ -90,11 +92,11 @@ final class ShareAccessTests: XCTestCase {
                 "name": "Client Photos 2026",
                 "mimeType": "application/vnd.google-apps.folder",
             ],
-            pastedID: folderID
+            pastedID: folder
         )
         XCTAssertEqual(
             probe,
-            .readable(bindID: folderID, name: "Client Photos 2026")
+            .readable(bindID: folder, name: "Client Photos 2026")
         )
     }
 
@@ -106,7 +108,7 @@ final class ShareAccessTests: XCTestCase {
                 "name": "Shot list.pdf",
                 "mimeType": "application/pdf",
             ],
-            pastedID: folderID
+            pastedID: folder
         )
         XCTAssertEqual(probe, .notAFolder)
     }
@@ -123,17 +125,17 @@ final class ShareAccessTests: XCTestCase {
                     "targetMimeType": "application/vnd.google-apps.folder",
                 ],
             ],
-            pastedID: folderID
+            pastedID: folder
         )
         XCTAssertEqual(
             probe,
-            .readable(bindID: shortcutTargetID, name: "Client Photos 2026")
+            .readable(bindID: shortcutTarget, name: "Client Photos 2026")
         )
     }
 
     func testUnauthorizedProbeAsksForATokenRefresh() {
         XCTAssertEqual(
-            DriveFolderAccess.interpret(statusCode: 401, body: nil, pastedID: folderID),
+            DriveFolderAccess.interpret(statusCode: 401, body: nil, pastedID: folder),
             .unauthorized
         )
     }
@@ -142,22 +144,22 @@ final class ShareAccessTests: XCTestCase {
         var flow = ShareOnboarding()
         flow.setLink("https://drive.google.com/drive/folders/\(folderID)")
         XCTAssertFalse(flow.isWaiting)
-        XCTAssertEqual(flow.status, .recognized(folderID: folderID))
+        XCTAssertEqual(flow.status, .recognized(folderID: folder))
+        XCTAssertEqual(flow.phase, .linkParsed(folder))
 
         flow.copyTapped()
         XCTAssertTrue(flow.isWaiting)
-        XCTAssertEqual(flow.pollTargetID, folderID)
+        XCTAssertEqual(flow.pollTargetID, folder)
+        XCTAssertEqual(flow.phase, .waiting(folder))
         XCTAssertTrue(flow.didCopy)
 
         let stillWaiting = flow.apply(probe: .notReadableYet)
         XCTAssertEqual(stillWaiting, .pollAgain)
-        XCTAssertTrue(flow.boundIDs.isEmpty)
         XCTAssertTrue(flow.isWaiting)
 
-        let bound = flow.apply(probe: .readable(bindID: folderID, name: "Client Photos 2026"))
-        XCTAssertEqual(bound, .bind(folderID: folderID))
-        XCTAssertEqual(flow.boundIDs, [folderID])
-        XCTAssertEqual(flow.boundNames[folderID], "Client Photos 2026")
+        let bound = flow.apply(probe: .readable(bindID: folder, name: "Client Photos 2026"))
+        XCTAssertEqual(bound, .bind(folderID: folder, name: "Client Photos 2026"))
+        XCTAssertEqual(flow.phase, .bound(folder))
         XCTAssertFalse(flow.isWaiting)
         XCTAssertNil(flow.pollTargetID)
     }
@@ -167,13 +169,13 @@ final class ShareAccessTests: XCTestCase {
         copiedFirst.copyTapped()
         XCTAssertFalse(copiedFirst.isWaiting)
         copiedFirst.setLink("https://drive.google.com/drive/u/0/folders/\(folderID)?usp=sharing")
-        XCTAssertEqual(copiedFirst.pollTargetID, folderID)
+        XCTAssertEqual(copiedFirst.pollTargetID, folder)
 
         var openedFirst = ShareOnboarding()
         openedFirst.setLink(folderID)
         XCTAssertFalse(openedFirst.isWaiting)
         openedFirst.openSharingTapped()
-        XCTAssertEqual(openedFirst.pollTargetID, folderID)
+        XCTAssertEqual(openedFirst.pollTargetID, folder)
     }
 
     func testCancelStopsPollingWithoutBinding() {
@@ -185,10 +187,10 @@ final class ShareAccessTests: XCTestCase {
         XCTAssertNil(flow.pollTargetID)
 
         let action = flow.apply(
-            probe: .readable(bindID: folderID, name: "Client Photos 2026")
+            probe: .readable(bindID: folder, name: "Client Photos 2026")
         )
         XCTAssertEqual(action, .idle)
-        XCTAssertTrue(flow.boundIDs.isEmpty)
+        XCTAssertEqual(flow.phase, .cancelled(folder))
     }
 
     func testNotAFolderStopsWaitingAndDoesNotBind() {
@@ -198,8 +200,8 @@ final class ShareAccessTests: XCTestCase {
         let action = flow.apply(probe: .notAFolder)
         XCTAssertEqual(action, .showNotAFolder)
         XCTAssertEqual(flow.rejection, .notAFolder)
+        XCTAssertEqual(flow.phase, .failed(folder))
         XCTAssertFalse(flow.isWaiting)
-        XCTAssertTrue(flow.boundIDs.isEmpty)
     }
 
     func testFileLinkDoesNotPoll() {
@@ -332,12 +334,12 @@ final class ShareAccessTests: XCTestCase {
         XCTAssertTrue(BoundFolderStore.load(buyerEmail: email).isEmpty)
         BoundFolderStore.save(
             [
-                BoundFolderRecord(id: "folder-a", name: nil),
-                BoundFolderRecord(id: "folder-b", name: nil),
+                BoundFolderRecord(id: folder, name: nil),
+                BoundFolderRecord(id: shortcutTarget, name: nil),
             ],
             buyerEmail: email
         )
-        XCTAssertEqual(BoundFolderStore.load(buyerEmail: email), Set(["folder-a", "folder-b"]))
+        XCTAssertEqual(BoundFolderStore.load(buyerEmail: email), Set([folder, shortcutTarget]))
     }
 
     func testBoundFolderStoreKeepsNameOrderAndLegacyIDs() throws {
@@ -346,20 +348,23 @@ final class ShareAccessTests: XCTestCase {
 
         BoundFolderStore.save(
             [
-                BoundFolderRecord(id: folderID, name: "Client Photos 2026"),
-                BoundFolderRecord(id: shortcutTargetID, name: "Wedding RAW"),
+                BoundFolderRecord(id: folder, name: "Client Photos 2026"),
+                BoundFolderRecord(id: shortcutTarget, name: "Wedding RAW"),
             ],
             buyerEmail: email
         )
         let loaded = BoundFolderStore.loadOrdered(buyerEmail: email)
-        XCTAssertEqual(loaded.map(\.id), [folderID, shortcutTargetID])
+        XCTAssertEqual(loaded.map(\.id), [folder, shortcutTarget])
         XCTAssertEqual(loaded.map(\.name), ["Client Photos 2026", "Wedding RAW"])
 
         let legacy = """
         ["legacy-folder-id-0001","legacy-folder-id-0002"]
         """.data(using: .utf8)!
         let decoded = BoundFolderStore.decode(legacy)
-        XCTAssertEqual(decoded.map(\.id), ["legacy-folder-id-0001", "legacy-folder-id-0002"])
+        XCTAssertEqual(
+            decoded.map(\.id.raw),
+            ["legacy-folder-id-0001", "legacy-folder-id-0002"]
+        )
         XCTAssertEqual(decoded.map(\.name), [nil, nil])
     }
 }

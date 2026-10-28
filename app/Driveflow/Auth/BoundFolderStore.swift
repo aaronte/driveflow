@@ -1,7 +1,7 @@
 import Foundation
 
 struct BoundFolderRecord: Codable, Equatable, Sendable {
-    var id: String
+    var id: FolderID
     var name: String?
 }
 
@@ -25,7 +25,7 @@ enum BoundFolderStore {
         return directory.appendingPathComponent("bound-folders-\(safe).json")
     }
 
-    static func load(buyerEmail: String) -> Set<String> {
+    static func load(buyerEmail: String) -> Set<FolderID> {
         Set(loadOrdered(buyerEmail: buyerEmail).map(\.id))
     }
 
@@ -33,6 +33,31 @@ enum BoundFolderStore {
         let url = fileURL(forBuyerEmail: buyerEmail)
         guard let data = try? Data(contentsOf: url) else { return [] }
         return decode(data)
+    }
+
+    static func bind(_ record: BoundFolderRecord, buyerEmail: String) {
+        var records = loadOrdered(buyerEmail: buyerEmail)
+        if let index = records.firstIndex(where: { $0.id == record.id }) {
+            let trimmed = record.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let trimmed, !trimmed.isEmpty, records[index].name != trimmed else { return }
+            records[index].name = trimmed
+        } else {
+            let trimmed = record.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = (trimmed?.isEmpty == false) ? trimmed : nil
+            records.append(BoundFolderRecord(id: record.id, name: name))
+        }
+        save(records, buyerEmail: buyerEmail)
+    }
+
+    static func updateName(id: FolderID, name: String, buyerEmail: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var records = loadOrdered(buyerEmail: buyerEmail)
+        guard let index = records.firstIndex(where: { $0.id == id }), records[index].name != trimmed else {
+            return
+        }
+        records[index].name = trimmed
+        save(records, buyerEmail: buyerEmail)
     }
 
     static func save(_ records: [BoundFolderRecord], buyerEmail: String) {
@@ -49,11 +74,14 @@ enum BoundFolderStore {
     static func decode(_ data: Data) -> [BoundFolderRecord] {
         guard let json = try? JSONSerialization.jsonObject(with: data) else { return [] }
         if let ids = json as? [String] {
-            return ids.filter { !$0.isEmpty }.map { BoundFolderRecord(id: $0, name: nil) }
+            return ids.compactMap { raw in
+                guard let id = FolderID(raw) else { return nil }
+                return BoundFolderRecord(id: id, name: nil)
+            }
         }
         if let records = json as? [[String: Any]] {
             return records.compactMap { dict in
-                guard let id = dict["id"] as? String, !id.isEmpty else { return nil }
+                guard let raw = dict["id"] as? String, let id = FolderID(raw) else { return nil }
                 return BoundFolderRecord(id: id, name: dict["name"] as? String)
             }
         }

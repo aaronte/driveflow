@@ -45,7 +45,7 @@ final class DriveBrowserModel: ObservableObject {
         let records = driveAccess?.orderedBoundFolders() ?? []
         boundFolders = records.map { record in
             BoundFolderSummary(
-                id: record.id,
+                id: record.id.raw,
                 name: record.name ?? "Shared folder",
                 itemCount: nil,
                 itemCountIsLowerBound: false
@@ -69,15 +69,15 @@ final class DriveBrowserModel: ObservableObject {
 
         for record in records {
             do {
-                let summary = try await client.folderSummary(id: record.id)
-                if let index = boundFolders.firstIndex(where: { $0.id == record.id }) {
+                let summary = try await client.folderSummary(id: record.id.raw)
+                if let index = boundFolders.firstIndex(where: { $0.id == record.id.raw }) {
                     boundFolders[index] = summary
                 }
                 driveAccess?.rememberFolderName(id: summary.id, name: summary.name)
-                if selectedFolderID == record.id,
+                if selectedFolderID == record.id.raw,
                    breadcrumbs.count >= 2,
-                   breadcrumbs[1].id == record.id {
-                    breadcrumbs[1] = DriveBreadcrumb(id: record.id, name: summary.name)
+                   breadcrumbs[1].id == record.id.raw {
+                    breadcrumbs[1] = DriveBreadcrumb(id: record.id.raw, name: summary.name)
                 }
             } catch {
                 // Keep the stored name until Drive answers.
@@ -173,6 +173,8 @@ final class DriveBrowserModel: ObservableObject {
 
     /// Drop listings/selection so a later account can't briefly see the previous one.
     func resetForSignOut() {
+        searchTask?.cancel()
+        searchTask = nil
         selectedIDs.removeAll()
         items = []
         boundFolders = []
@@ -197,8 +199,12 @@ final class DriveBrowserModel: ObservableObject {
             isLoading = true
             defer { isLoading = false }
             do {
-                items = try await client.search(query: query, boundFolderIDs: bound)
+                let found = try await client.search(query: query, boundFolderIDs: bound)
+                if Task.isCancelled { return }
+                items = found
                 nextPageToken = nil
+            } catch is CancellationError {
+                return
             } catch let error as AppError {
                 lastError = error
             } catch {

@@ -2,10 +2,20 @@ import Foundation
 import Security
 
 enum ShareMintClient {
-    struct Session: Sendable {
+    struct Session: Equatable, Sendable {
         let shareEmail: String
         let accessToken: String
         let expiresAt: Date
+    }
+
+    enum MintServerReply: Equatable {
+        case ready(Session)
+        case reauthenticate
+        case unpaid
+        case backoff(TimeInterval)
+        case rateLimited
+        case mintFailed
+        case other(statusCode: Int, detail: String)
     }
 
     struct MintAPIResponse: Decodable {
@@ -112,6 +122,56 @@ enum ShareMintClient {
         return Session(shareEmail: shareEmail, accessToken: accessToken, expiresAt: expiresAt)
     }
 
+    static func interpretReply(
+        statusCode: Int,
+        data: Data,
+        retryAttempt: Int,
+        retryAfterHeader: String?,
+        now: Date = Date()
+    ) throws -> MintServerReply {
+        switch httpOutcome(for: statusCode) {
+        case .success:
+            return .ready(try session(fromMintData: data, now: now))
+        case .reauthenticate:
+            return .reauthenticate
+        case .unpaid:
+            return .unpaid
+        case .retry:
+            if retryAttempt < maxRateLimitRetries {
+                return .backoff(
+                    retryDelaySeconds(
+                        attempt: retryAttempt,
+                        retryAfterHeader: retryAfterHeader,
+                        now: now
+                    )
+                )
+            }
+            return .rateLimited
+        case .mintFailed:
+            return .mintFailed
+        case .other:
+            let body = String(data: data, encoding: .utf8) ?? "HTTP \(statusCode)"
+            return .other(statusCode: statusCode, detail: body)
+        }
+    }
+
+    static func failure(for reply: MintServerReply) -> AppError {
+        switch reply {
+        case .ready, .backoff:
+            preconditionFailure("A successful mint reply is not a failure")
+        case .reauthenticate:
+            return .shareMintUnauthorized
+        case .unpaid:
+            return .licenseRequired(email: nil)
+        case .rateLimited:
+            return .shareMintRateLimited
+        case .mintFailed:
+            return .shareMintFailed
+        case .other(let statusCode, let detail):
+            return .network("Share mint failed (HTTP \(statusCode)). \(detail)")
+        }
+    }
+
     static func session(fromLicenseJSON json: [String: Any]) -> Session? {
         guard let shareEmail = (json["shareEmail"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -144,27 +204,22 @@ enum ShareMintClient {
             guard let http = response as? HTTPURLResponse else {
                 throw AppError.network("No response from share mint server.")
             }
-            switch httpOutcome(for: http.statusCode) {
-            case .success:
-                return try session(fromMintData: data)
-            case .retry where rateLimitRetries < maxRateLimitRetries:
-                let delay = retryDelaySeconds(
-                    attempt: rateLimitRetries,
-                    retryAfterHeader: http.value(forHTTPHeaderField: "Retry-After")
-                )
+            let reply = try interpretReply(
+                statusCode: http.statusCode,
+                data: data,
+                retryAttempt: rateLimitRetries,
+                retryAfterHeader: http.value(forHTTPHeaderField: "Retry-After")
+            )
+            switch reply {
+            case .ready(let session):
+                return session
+            case .backoff(let delay):
                 rateLimitRetries += 1
                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            case .retry:
-                throw AppError.shareMintRateLimited
-            case .reauthenticate:
-                throw AppError.shareMintUnauthorized
-            case .unpaid:
-                throw AppError.licenseRequired(email: nil)
-            case .mintFailed:
-                throw AppError.shareMintFailed
-            case .other:
-                let body = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
-                throw AppError.network("Share mint failed (HTTP \(http.statusCode)). \(body)")
+            case .reauthenticate, .unpaid, .rateLimited, .mintFailed:
+                throw failure(for: reply)
+            case .other(_, _):
+                throw failure(for: reply)
             }
         }
     }
