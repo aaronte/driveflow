@@ -4,6 +4,7 @@ struct ShareSetupView: View {
     @ObservedObject var auth: AuthSession
     @ObservedObject var driveAccess: DriveAccessSession
     @ObservedObject var downloads: DownloadController
+    @EnvironmentObject private var browser: DriveBrowserModel
 
     var body: some View {
         ZStack {
@@ -347,8 +348,9 @@ struct ShareSetupView: View {
             }
             Button("Sign out") {
                 Task {
-                    await downloads.clearEngineCredentials()
                     driveAccess.clear()
+                    browser.resetForSignOut()
+                    await downloads.clearEngineCredentials()
                     auth.signOut()
                 }
             }

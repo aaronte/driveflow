@@ -366,6 +366,8 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         do {
             try await refreshShareSession(buyerEmail: buyerEmail)
             return onboarding.isWaiting
+        } catch is CancellationError {
+            return false
         } catch let error as AppError {
             guard self.buyerEmail != nil else { return false }
             lastError = error

@@ -70,6 +70,7 @@ final class DriveBrowserModel: ObservableObject {
         for record in records {
             do {
                 let summary = try await client.folderSummary(id: record.id.raw)
+                guard driveAccess?.boundFolderIDs.contains(record.id.raw) == true else { continue }
                 if let index = boundFolders.firstIndex(where: { $0.id == record.id.raw }) {
                     boundFolders[index] = summary
                 }
@@ -79,6 +80,8 @@ final class DriveBrowserModel: ObservableObject {
                    breadcrumbs[1].id == record.id.raw {
                     breadcrumbs[1] = DriveBreadcrumb(id: record.id.raw, name: summary.name)
                 }
+            } catch is CancellationError {
+                return
             } catch {
                 // Keep the stored name until Drive answers.
             }

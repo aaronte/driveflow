@@ -38,9 +38,9 @@ struct ContentView: View {
 
     private func returnToSignIn(because failure: AppError) {
         Task {
-            await downloads.clearEngineCredentials()
-            browser.resetForSignOut()
             driveAccess.clear()
+            browser.resetForSignOut()
+            await downloads.clearEngineCredentials()
             auth.signOut()
             auth.lastError = failure
         }

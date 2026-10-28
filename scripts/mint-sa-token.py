@@ -124,6 +124,11 @@ def main() -> int:
     access_token = token["access_token"]
     expires_in = int(token.get("expires_in", 3600))
 
+    payload = {
+        "shareEmail": share_email,
+        "accessToken": access_token,
+        "expiresIn": expires_in,
+    }
     if args.print_exports:
         print(f'export DRIVEFLOW_SHARE_EMAIL="{share_email}"')
         print(f'export DRIVEFLOW_SHARE_ACCESS_TOKEN="{access_token}"')
