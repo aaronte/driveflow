@@ -211,10 +211,8 @@ final class ShareAccessTests: XCTestCase {
         XCTAssertNil(flow.pollTargetID)
     }
 
-    func testBrowseRootIsSharedWithDriveflowNotMyDrive() {
+    func testBrowseRootIsSharedWithDriveflow() {
         XCTAssertEqual(BoundFolderBrowse.rootTitle, "Shared with Driveflow")
-        XCTAssertNotEqual(BoundFolderBrowse.rootTitle, DriveRoot.myDrive.title)
-        XCTAssertNotEqual(BoundFolderBrowse.rootTitle, DriveRoot.sharedDrives.title)
     }
 
     func testMintRequestSendsIDTokenAsBearerAndBody() throws {
@@ -332,8 +330,14 @@ final class ShareAccessTests: XCTestCase {
         defer { BoundFolderStore.clear(buyerEmail: email) }
 
         XCTAssertTrue(BoundFolderStore.load(buyerEmail: email).isEmpty)
-        BoundFolderStore.save(["folder-a", "folder-b"], buyerEmail: email)
-        XCTAssertEqual(BoundFolderStore.load(buyerEmail: email), ["folder-a", "folder-b"])
+        BoundFolderStore.save(
+            [
+                BoundFolderRecord(id: "folder-a", name: nil),
+                BoundFolderRecord(id: "folder-b", name: nil),
+            ],
+            buyerEmail: email
+        )
+        XCTAssertEqual(BoundFolderStore.load(buyerEmail: email), Set(["folder-a", "folder-b"]))
     }
 
     func testBoundFolderStoreKeepsNameOrderAndLegacyIDs() throws {

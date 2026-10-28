@@ -13,6 +13,7 @@ Or write a tiny local mint HTTP server response shape for DRIVEFLOW_SHARE_MINT_U
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -36,8 +37,6 @@ TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 
 def b64url(data: bytes) -> str:
-    import base64
-
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 

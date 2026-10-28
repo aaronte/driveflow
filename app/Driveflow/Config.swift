@@ -118,13 +118,6 @@ enum AppConfig {
         return productionShareMintURL
     }
 
-    static var configuredShareEmail: String? {
-        let value = ProcessInfo.processInfo.environment["DRIVEFLOW_SHARE_EMAIL"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value, !value.isEmpty else { return nil }
-        return value
-    }
-
     /// Paid notarized builds set `DRIVEFLOW_PAID_BUILD` at compile time (see release script).
     /// Local/OSS builds stay ungated unless `DRIVEFLOW_REQUIRES_LICENSE=1` is set at runtime.
     static var requiresPaidLicense: Bool {

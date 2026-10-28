@@ -111,11 +111,7 @@ final class DriveBrowserModel: ObservableObject {
             return
         }
         do {
-            let result = try await client.list(
-                parentID: parent,
-                root: .sharedWithMe,
-                boundFolderIDs: boundFolderIDs
-            )
+            let result = try await client.list(parentID: parent)
             items = result.items
             nextPageToken = result.nextPageToken
         } catch let error as AppError {
@@ -135,9 +131,7 @@ final class DriveBrowserModel: ObservableObject {
         do {
             let result = try await client.list(
                 parentID: parent,
-                root: .sharedWithMe,
-                pageToken: nextPageToken,
-                boundFolderIDs: boundFolderIDs
+                pageToken: nextPageToken
             )
             items.append(contentsOf: result.items)
             self.nextPageToken = result.nextPageToken

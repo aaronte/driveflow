@@ -28,8 +28,4 @@ enum LicenseClient {
         let share = ShareMintClient.session(fromLicenseJSON: json)
         return CheckResult(allowed: allowed, shareSession: share)
     }
-
-    static func hasLicense(email: String) async throws -> Bool {
-        try await check(email: email).allowed
-    }
 }

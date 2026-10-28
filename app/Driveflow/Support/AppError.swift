@@ -6,8 +6,6 @@ enum AppError: LocalizedError, Identifiable {
     case shareMintUnauthorized
     case shareMintRateLimited
     case shareMintFailed
-    case waitingForShare
-    case folderLinkNotFolder
     case authCancelled
     case authFailed(String)
     case authRevoked(String)
@@ -36,10 +34,6 @@ enum AppError: LocalizedError, Identifiable {
             return "Driveflow is busy opening Drive access. Wait a moment and try again."
         case .shareMintFailed:
             return "Driveflow couldn’t open Drive access. Try again in a moment."
-        case .waitingForShare:
-            return "Still waiting for access to that folder. Share it as Viewer with your Driveflow address, and leave Notify people unchecked."
-        case .folderLinkNotFolder:
-            return "That link isn’t a folder. Paste a Google Drive folder link."
         case .authCancelled:
             return "Sign-in was cancelled."
         case .authFailed(let detail):
@@ -84,10 +78,6 @@ enum AppError: LocalizedError, Identifiable {
             return "The Drive session service asked Driveflow to slow down."
         case .shareMintFailed:
             return "If this keeps happening, sign out and sign in again."
-        case .waitingForShare:
-            return "In Google Drive: Share → paste the Driveflow email → Viewer → uncheck Notify people → Share."
-        case .folderLinkNotFolder:
-            return "In Google Drive, open the folder and copy its link. It looks like https://drive.google.com/drive/folders/…"
         case .licenseRequired:
             return "Purchase at usedriveflow.app using this Google email, then sign in again."
         case .authCancelled, .authFailed, .authRevoked, .tokenExpired:
@@ -110,7 +100,7 @@ enum AppError: LocalizedError, Identifiable {
         case .shareMintUnauthorized, .licenseRequired, .tokenExpired, .authRevoked:
             return true
         case .notConfigured, .shareAccessNotConfigured, .shareMintRateLimited, .shareMintFailed,
-             .waitingForShare, .folderLinkNotFolder, .authCancelled, .authFailed, .network,
+             .authCancelled, .authFailed, .network,
              .driveAPI, .destinationUnavailable, .insufficientSpace, .volumeWarning,
              .rcloneMissing, .rcloneFailed, .unknown:
             return false

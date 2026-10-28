@@ -61,22 +61,6 @@ struct DriveBreadcrumb: Identifiable, Hashable, Sendable {
     let name: String
 }
 
-enum DriveRoot: String, CaseIterable, Identifiable {
-    case myDrive
-    case sharedWithMe
-    case sharedDrives
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .myDrive: return "My Drive"
-        case .sharedWithMe: return "Shared with me"
-        case .sharedDrives: return "Shared drives"
-        }
-    }
-}
-
 /// Virtual root above the folders a buyer has shared with Driveflow.
 enum BoundFolderBrowse {
     static let rootCrumbID = "shared-with-driveflow"

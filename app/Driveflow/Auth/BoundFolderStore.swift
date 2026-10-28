@@ -35,15 +35,6 @@ enum BoundFolderStore {
         return decode(data)
     }
 
-    static func save(_ ids: Set<String>, buyerEmail: String) {
-        let existing = loadOrdered(buyerEmail: buyerEmail)
-        var ordered = existing.filter { ids.contains($0.id) }
-        for id in ids.sorted() where !ordered.contains(where: { $0.id == id }) {
-            ordered.append(BoundFolderRecord(id: id, name: nil))
-        }
-        save(ordered, buyerEmail: buyerEmail)
-    }
-
     static func save(_ records: [BoundFolderRecord], buyerEmail: String) {
         let url = fileURL(forBuyerEmail: buyerEmail)
         guard let data = try? JSONEncoder().encode(records) else { return }
