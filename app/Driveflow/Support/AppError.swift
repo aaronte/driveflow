@@ -2,7 +2,6 @@ import Foundation
 
 enum AppError: LocalizedError, Identifiable {
     case notConfigured
-    case shareAccessNotConfigured
     case shareMintUnauthorized
     case shareMintRateLimited
     case shareMintFailed
@@ -26,8 +25,6 @@ enum AppError: LocalizedError, Identifiable {
         switch self {
         case .notConfigured:
             return "Google sign-in isn’t set up yet. Add Desktop OAuth credentials via env vars or oauth-client.json (see README)."
-        case .shareAccessNotConfigured:
-            return "Drive share access isn’t set up yet. Configure a share mint URL, a local service-account key, or DRIVEFLOW_SHARE_EMAIL + DRIVEFLOW_SHARE_ACCESS_TOKEN (see README)."
         case .shareMintUnauthorized:
             return "Your Driveflow sign-in expired. Sign in again to continue."
         case .shareMintRateLimited:
@@ -70,8 +67,6 @@ enum AppError: LocalizedError, Identifiable {
         switch self {
         case .notConfigured:
             return "Copy oauth-client.example.json to oauth-client.json, or set DRIVEFLOW_GOOGLE_CLIENT_ID and DRIVEFLOW_GOOGLE_CLIENT_SECRET."
-        case .shareAccessNotConfigured:
-            return "Create a service account in GCP project driveflow-503421, enable the Drive API, and use the mint API or a gitignored local key for development."
         case .shareMintUnauthorized:
             return "Choose Sign in with Google to continue."
         case .shareMintRateLimited:
@@ -99,7 +94,7 @@ enum AppError: LocalizedError, Identifiable {
         switch self {
         case .shareMintUnauthorized, .licenseRequired, .tokenExpired, .authRevoked:
             return true
-        case .notConfigured, .shareAccessNotConfigured, .shareMintRateLimited, .shareMintFailed,
+        case .notConfigured, .shareMintRateLimited, .shareMintFailed,
              .authCancelled, .authFailed, .network,
              .driveAPI, .destinationUnavailable, .insufficientSpace, .volumeWarning,
              .rcloneMissing, .rcloneFailed, .unknown:

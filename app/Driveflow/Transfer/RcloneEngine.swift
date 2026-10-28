@@ -33,9 +33,6 @@ struct TransferStats: Equatable, Sendable {
 }
 
 actor RcloneEngine {
-    /// Isolated remote name — never touch the user's default rclone remotes.
-    private static let remoteName = "driveflow"
-
     private var process: Process?
     /// Mirrored for synchronous terminate-on-quit (Process.terminate is thread-safe enough).
     nonisolated(unsafe) private var shutdownProcess: Process?
@@ -44,6 +41,8 @@ actor RcloneEngine {
     private var lastTermination: String?
     private var rcPort: UInt16 = 0
     private var rcPass = ""
+    private var driveToken: String?
+    private var ephemeralConfigDirectory: URL?
     private let rcUser = AppConfig.rcloneRCUser
 
     private var binaryURL: URL {
@@ -63,8 +62,8 @@ actor RcloneEngine {
         return directory
     }
 
-    /// App-private rclone config — never `~/.config/rclone/rclone.conf`.
-    private var configURL: URL {
+    /// Older builds wrote the access token here. New runs delete the file and do not recreate it.
+    private var legacyConfigURL: URL {
         supportDirectory.appendingPathComponent("rclone.conf")
     }
 
@@ -82,6 +81,7 @@ actor RcloneEngine {
         let pass = Self.randomPassword()
         rcPort = port
         rcPass = pass
+        let configDirectory = try makeEphemeralConfigDirectory()
 
         let process = Process()
         process.executableURL = binaryURL
@@ -89,11 +89,11 @@ actor RcloneEngine {
         var environment = ProcessInfo.processInfo.environment
         environment["RCLONE_RC_USER"] = rcUser
         environment["RCLONE_RC_PASS"] = pass
-        environment["RCLONE_CONFIG"] = configURL.path
+        environment["RCLONE_CONFIG"] = configDirectory.appendingPathComponent("rclone.conf").path
         process.environment = environment
         process.arguments = [
             "rcd",
-            "--config=\(configURL.path)",
+            "--config=\(configDirectory.appendingPathComponent("rclone.conf").path)",
             "--rc-addr=127.0.0.1:\(port)",
             "--rc-web-gui=false",
             "--transfers=8",
@@ -154,6 +154,7 @@ actor RcloneEngine {
         started = false
         try? logHandle?.close()
         logHandle = nil
+        discardConfigFiles()
     }
 
     /// Synchronous path for app termination — safe to call without awaiting the actor.
@@ -162,32 +163,18 @@ actor RcloneEngine {
     }
 
     func configureDrive(tokenJSON: String) async throws {
+        driveToken = tokenJSON
         try await ensureRunning()
-        // Access-token-only remote: the token is a short-lived service-account
-        // Bearer mint. Do not embed an SA JSON key or user OAuth client secrets
-        // here — DownloadController re-injects a fresh token before transfers.
-        _ = try await rc("config/create", body: [
-            "name": Self.remoteName,
-            "type": "drive",
-            "parameters": [
-                "token": tokenJSON,
-                "scope": "drive.readonly",
-            ],
-            "opt": [
-                "nonInteractive": true,
-                "obscure": true,
-            ],
-        ])
-        Self.restrictToOwner(configURL)
     }
 
-    /// Remove the Drive remote, stop the engine, and delete the app-private config.
+    /// Stop the engine and delete any config file that could hold a token.
     func clearPersistedCredentials() async {
+        driveToken = nil
         if started {
-            _ = try? await rc("config/delete", body: ["name": Self.remoteName])
             stop()
+        } else {
+            discardConfigFiles()
         }
-        try? FileManager.default.removeItem(at: configURL)
     }
 
     /// Copy a Drive file or folder (by ID) into destination/<name>.
@@ -245,9 +232,9 @@ actor RcloneEngine {
         let response: [String: Any]
         if isFolder {
             try FileManager.default.createDirectory(at: dst, withIntermediateDirectories: true)
-            let srcFs = isSharedDriveRoot
-                ? "\(Self.remoteName),team_drive=\(id):"
-                : "\(Self.remoteName),root_folder_id=\(id):"
+            let srcFs = try driveRemote(
+                extra: isSharedDriveRoot ? "team_drive=\(id)" : "root_folder_id=\(id)"
+            )
             response = try await rc("sync/copy", body: [
                 "srcFs": srcFs,
                 "dstFs": dst.path,
@@ -257,7 +244,7 @@ actor RcloneEngine {
             // Google Drive paths are not unique, so files must be copied by ID.
             response = try await rc("backend/command", body: [
                 "command": "copyid",
-                "fs": "\(Self.remoteName):",
+                "fs": try driveRemote(),
                 "arg": [id, dst.path],
                 "_async": true,
             ])
@@ -333,6 +320,43 @@ actor RcloneEngine {
             fileName += suffix
         }
         return fileName
+    }
+
+    private func driveRemote(extra: String? = nil) throws -> String {
+        guard let driveToken, !driveToken.isEmpty else {
+            throw AppError.rcloneFailed("Drive access expired. Sign in again.")
+        }
+        var parameters = [
+            "scope=drive.readonly",
+            "token='\(driveToken.replacingOccurrences(of: "'", with: ""))'",
+        ]
+        if let extra, !extra.isEmpty {
+            parameters.append(extra)
+        }
+        return ":drive,\(parameters.joined(separator: ",")):"
+    }
+
+    private func makeEphemeralConfigDirectory() throws -> URL {
+        discardConfigFiles()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("driveflow-rclone-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let config = directory.appendingPathComponent("rclone.conf")
+        FileManager.default.createFile(
+            atPath: config.path,
+            contents: Data(),
+            attributes: [.posixPermissions: 0o600]
+        )
+        ephemeralConfigDirectory = directory
+        return directory
+    }
+
+    private func discardConfigFiles() {
+        try? FileManager.default.removeItem(at: legacyConfigURL)
+        if let ephemeralConfigDirectory {
+            try? FileManager.default.removeItem(at: ephemeralConfigDirectory)
+        }
+        ephemeralConfigDirectory = nil
     }
 
     private func ping() async -> Bool {

@@ -66,8 +66,6 @@ enum AppConfig {
 
     /// Purchaser identity only — Drive files are accessed via a service-account token.
     static let oauthScopes = "openid email"
-    /// Scope requested when minting service-account access tokens (2LO).
-    static let driveReadonlyScope = "https://www.googleapis.com/auth/drive.readonly"
     static let driveAPIBase = URL(string: "https://www.googleapis.com/drive/v3")!
 
     static let rcloneRCUser = "driveflow"
@@ -89,32 +87,20 @@ enum AppConfig {
 
     static let productionShareMintURL = URL(string: "https://usedriveflow.app/api/drive/session")!
 
-    /// Release builds default to `productionShareMintURL`. Debug builds leave it
-    /// unset so a local service-account key or env token can be used.
-    /// `DRIVEFLOW_SHARE_MINT_URL` overrides both.
-    static var shareMintURL: URL? {
+    /// `DRIVEFLOW_SHARE_MINT_URL` overrides the production mint URL for every build.
+    static var shareMintURL: URL {
         resolvedShareMintURL(
-            environmentOverride: ProcessInfo.processInfo.environment["DRIVEFLOW_SHARE_MINT_URL"],
-            isReleaseBuild: isReleaseBuild
+            environmentOverride: ProcessInfo.processInfo.environment["DRIVEFLOW_SHARE_MINT_URL"]
         )
     }
 
-    static var isReleaseBuild: Bool {
-        #if DEBUG
-        return false
-        #else
-        return true
-        #endif
-    }
-
-    static func resolvedShareMintURL(environmentOverride: String?, isReleaseBuild: Bool) -> URL? {
+    static func resolvedShareMintURL(environmentOverride: String?) -> URL {
         if let raw = environmentOverride?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty,
            let url = URL(string: raw),
            url.scheme == "https" || url.scheme == "http" {
             return url
         }
-        guard isReleaseBuild else { return nil }
         return productionShareMintURL
     }
 

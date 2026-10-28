@@ -28,10 +28,6 @@ final class AuthSession: NSObject, ObservableObject {
         Task { await restoreSession() }
     }
 
-    var accessToken: String? {
-        try? CredentialStore.get(account: accessAccount)
-    }
-
     func restoreSession() async {
         guard let refresh = try? CredentialStore.get(account: refreshAccount), !refresh.isEmpty else {
             isSignedIn = false

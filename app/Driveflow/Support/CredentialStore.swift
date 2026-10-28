@@ -1,62 +1,79 @@
 import Foundation
 import Security
 
-/// Persists auth secrets for Driveflow.
+/// Login Keychain is the only token store.
 ///
-/// Strategy:
-/// 1. The Application Support file store is the primary source of truth. Ad-hoc
-///    builds run from changing paths, so the login keychain treats every rebuild
-///    as a different app and throws password prompts for each item read.
-/// 2. The keychain is a silent best-effort mirror: all SecItem calls run with
-///    process keychain UI disabled, so an ACL denial fails quietly
-///    (errSecInteractionNotAllowed) instead of prompting the user.
+/// Older builds kept the same accounts in `session.tokens`. The first read or
+/// write copies those values into the Keychain and deletes the file.
 enum CredentialStore {
     private static let service = AppConfig.bundleID
     /// errSecMissingEntitlement — Data Protection / restricted keychain without entitlements.
     private static let missingEntitlement: OSStatus = -34018
+    private static var didMigrate = false
 
     static func set(_ value: String, account: String) throws {
-        try setFile(value, account: account)
-        // Best-effort keychain; never fail the sign-in solely because of ACL/entitlements.
-        withoutKeychainUI {
-            try? setKeychain(value, account: account)
+        migrateFromFileIfNeeded()
+        try withoutKeychainUI {
+            try setKeychain(value, account: account)
         }
     }
 
     static func get(account: String) throws -> String? {
-        // File first: reading it never triggers a keychain password prompt.
-        if let value = try getFile(account: account), !value.isEmpty {
-            return value
+        migrateFromFileIfNeeded()
+        return try withoutKeychainUI {
+            try getKeychain(account: account)
         }
-        // Migration path for sessions saved by older builds — silent only.
-        let migrated = withoutKeychainUI {
-            try? getKeychain(account: account)
-        }
-        if let migrated, !migrated.isEmpty {
-            try? setFile(migrated, account: account)
-            return migrated
-        }
-        return nil
     }
 
     static func delete(account: String) {
-        deleteFile(account: account)
+        migrateFromFileIfNeeded()
         withoutKeychainUI {
             SecItemDelete(baseQuery(account: account) as CFDictionary)
         }
     }
 
-    /// Runs keychain calls with UI suppressed so ACL mismatches (ad-hoc builds
-    /// launched from changing paths) fail with errSecInteractionNotAllowed
-    /// instead of prompting for the login keychain password.
+    /// Keychain UI stays off so an ad-hoc ACL denial fails the call instead of prompting.
     @discardableResult
-    private static func withoutKeychainUI<T>(_ body: () -> T) -> T {
+    private static func withoutKeychainUI<T>(_ body: () throws -> T) rethrows -> T {
         SecKeychainSetUserInteractionAllowed(false)
         defer { SecKeychainSetUserInteractionAllowed(true) }
-        return body()
+        return try body()
     }
 
-    // MARK: - Keychain (best-effort mirror)
+    private static func migrateFromFileIfNeeded() {
+        guard !didMigrate else { return }
+        let url = legacyFileURL
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            didMigrate = true
+            return
+        }
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: String]
+        else {
+            try? FileManager.default.removeItem(at: url)
+            didMigrate = true
+            return
+        }
+        for (account, value) in json where !value.isEmpty {
+            do {
+                try withoutKeychainUI {
+                    try setKeychain(value, account: account)
+                }
+            } catch {
+                return
+            }
+        }
+        try? FileManager.default.removeItem(at: url)
+        didMigrate = true
+    }
+
+    private static var legacyFileURL: URL {
+        let directory = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first!.appendingPathComponent("Driveflow", isDirectory: true)
+        return directory.appendingPathComponent("session.tokens")
+    }
 
     private static func setKeychain(_ value: String, account: String) throws {
         let data = Data(value.utf8)
@@ -112,53 +129,7 @@ enum CredentialStore {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            // Intentionally NOT using kSecUseDataProtectionKeychain — that requires
-            // keychain-access-groups entitlements unavailable under ad-hoc signing.
         ]
-    }
-
-    // MARK: - Application Support (primary)
-
-    private static var storeURL: URL {
-        let directory = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!.appendingPathComponent("Driveflow", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory.appendingPathComponent("session.tokens")
-    }
-
-    private static func loadFileStore() -> [String: String] {
-        guard let data = try? Data(contentsOf: storeURL),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
-            return [:]
-        }
-        return json
-    }
-
-    private static func saveFileStore(_ values: [String: String]) throws {
-        let data = try JSONSerialization.data(withJSONObject: values, options: [.prettyPrinted])
-        try data.write(to: storeURL, options: [.atomic])
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: storeURL.path
-        )
-    }
-
-    private static func setFile(_ value: String, account: String) throws {
-        var values = loadFileStore()
-        values[account] = value
-        try saveFileStore(values)
-    }
-
-    private static func getFile(account: String) throws -> String? {
-        loadFileStore()[account]
-    }
-
-    private static func deleteFile(account: String) {
-        var values = loadFileStore()
-        values.removeValue(forKey: account)
-        try? saveFileStore(values)
     }
 }
 

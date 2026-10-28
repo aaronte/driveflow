@@ -75,7 +75,8 @@ targets:
       path: Driveflow/Driveflow.entitlements
       properties:
         # No keychain-access-groups — that requires a provisioning profile and
-        # blocks Developer ID CLI archives. CredentialStore uses Application Support.
+        # blocks Developer ID CLI archives. CredentialStore uses the login keychain
+        # without the data-protection keychain.
         com.apple.security.app-sandbox: false
     info:
       path: Driveflow/Info.plist

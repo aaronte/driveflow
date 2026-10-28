@@ -4,9 +4,14 @@ import AppKit
 /// Short-lived service-account access token plus the public share email. No SA JSON key in the app.
 @MainActor
 final class DriveAccessSession: ObservableObject, AccessTokenProviding {
+    enum Screen: Equatable {
+        case needsFolder
+        case browsing
+        case addingFolder
+    }
+
     @Published private(set) var shareEmail: String?
-    @Published private(set) var isReady = false
-    @Published private(set) var isPresentingAddFolder = false
+    @Published private(set) var screen: Screen = .needsFolder
     @Published private(set) var isBusy = false
     @Published private(set) var boundFolderIDs: Set<String> = []
     @Published private(set) var preferredFolderID: String?
@@ -33,15 +38,14 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
 
     var hasShareEmail: Bool { shareEmail?.isEmpty == false }
 
-    var showsShareSetup: Bool { !isReady || isPresentingAddFolder }
+    var showsShareSetup: Bool { screen != .browsing }
 
-    var canDismissAddFolder: Bool { isReady && isPresentingAddFolder }
+    var canDismissAddFolder: Bool { screen == .addingFolder }
 
     func bootstrap(buyerEmail: String) async {
         lastError = nil
         self.buyerEmail = buyerEmail
         reloadBoundFoldersFromStore()
-        isPresentingAddFolder = false
 
         do {
             try await refreshShareSession(buyerEmail: buyerEmail)
@@ -49,13 +53,13 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
             guard self.buyerEmail != nil else { return }
             lastError = error
             if boundFolderIDs.isEmpty {
-                isReady = false
+                screen = .needsFolder
             }
         } catch {
             guard self.buyerEmail != nil else { return }
             lastError = .network(error.localizedDescription)
             if boundFolderIDs.isEmpty {
-                isReady = false
+                screen = .needsFolder
             }
         }
     }
@@ -177,7 +181,7 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
     }
 
     func presentAddFolder() {
-        isPresentingAddFolder = true
+        screen = boundFolderIDs.isEmpty ? .needsFolder : .addingFolder
         lastError = nil
         unauthorizedRetry.clear()
         mutateOnboarding { $0.resetForNewFolder() }
@@ -185,8 +189,8 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
     }
 
     func dismissAddFolder() {
-        guard isReady else { return }
-        isPresentingAddFolder = false
+        guard screen == .addingFolder else { return }
+        screen = .browsing
         lastError = nil
         mutateOnboarding { $0.resetForNewFolder() }
         stopPolling()
@@ -219,8 +223,7 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         buyerEmail = nil
         boundFolderIDs = []
         preferredFolderID = nil
-        isReady = false
-        isPresentingAddFolder = false
+        screen = .needsFolder
         onboarding = ShareOnboarding()
         lastError = nil
         authenticationFailure = nil
@@ -263,16 +266,13 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    private func googleIDTokenForMint() async throws -> String? {
-        if AppConfig.shareMintURL != nil {
-            guard let idTokenProvider else {
-                throw AppError.authFailed(
-                    "Sign in again so Driveflow can verify your Google account before opening Drive."
-                )
-            }
-            return try await idTokenProvider()
+    private func googleIDTokenForMint() async throws -> String {
+        guard let idTokenProvider else {
+            throw AppError.authFailed(
+                "Sign in again so Driveflow can verify your Google account before opening Drive."
+            )
         }
-        return try? await idTokenProvider?()
+        return try await idTokenProvider()
     }
 
     private func mutateOnboarding(_ body: (inout ShareOnboarding) -> Void) {
@@ -284,12 +284,12 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
     private func reloadBoundFoldersFromStore() {
         guard let buyerEmail else {
             boundFolderIDs = []
-            isReady = false
+            screen = .needsFolder
             return
         }
         let records = BoundFolderStore.loadOrdered(buyerEmail: buyerEmail)
         boundFolderIDs = Set(records.map(\.id.raw))
-        isReady = !boundFolderIDs.isEmpty
+        screen = boundFolderIDs.isEmpty ? .needsFolder : .browsing
     }
 
     private func persist(session: ShareMintClient.Session, buyerEmail: String) throws {
@@ -393,8 +393,7 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         let records = BoundFolderStore.loadOrdered(buyerEmail: buyerEmail)
         boundFolderIDs = Set(records.map(\.id.raw))
         preferredFolderID = id.raw
-        isReady = true
-        isPresentingAddFolder = false
+        screen = .browsing
         stopPolling()
     }
 

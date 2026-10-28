@@ -277,18 +277,19 @@ final class ShareAccessTests: XCTestCase {
         XCTAssertEqual(ShareMintClient.retryDelaySeconds(attempt: 0, retryAfterHeader: "120"), 30)
 
         XCTAssertEqual(
-            AppConfig.resolvedShareMintURL(environmentOverride: nil, isReleaseBuild: true)?.absoluteString,
+            AppConfig.resolvedShareMintURL(environmentOverride: nil).absoluteString,
             "https://usedriveflow.app/api/drive/session"
         )
         XCTAssertEqual(
             AppConfig.resolvedShareMintURL(
-                environmentOverride: "https://staging.example/api/drive/session",
-                isReleaseBuild: true
-            )?.absoluteString,
+                environmentOverride: "https://staging.example/api/drive/session"
+            ).absoluteString,
             "https://staging.example/api/drive/session"
         )
-        XCTAssertNil(AppConfig.resolvedShareMintURL(environmentOverride: nil, isReleaseBuild: false))
-        XCTAssertNil(AppConfig.resolvedShareMintURL(environmentOverride: "  ", isReleaseBuild: false))
+        XCTAssertEqual(
+            AppConfig.resolvedShareMintURL(environmentOverride: "  ").absoluteString,
+            "https://usedriveflow.app/api/drive/session"
+        )
     }
 
     func testIDTokenExpiryReadsExpClaim() {
@@ -342,7 +343,7 @@ final class ShareAccessTests: XCTestCase {
         XCTAssertEqual(BoundFolderStore.load(buyerEmail: email), Set([folder, shortcutTarget]))
     }
 
-    func testBoundFolderStoreKeepsNameOrderAndLegacyIDs() throws {
+    func testBoundFolderStoreKeepsNameAndOrder() throws {
         let email = "share-access-order-\(UUID().uuidString)@example.com"
         defer { BoundFolderStore.clear(buyerEmail: email) }
 
@@ -356,16 +357,6 @@ final class ShareAccessTests: XCTestCase {
         let loaded = BoundFolderStore.loadOrdered(buyerEmail: email)
         XCTAssertEqual(loaded.map(\.id), [folder, shortcutTarget])
         XCTAssertEqual(loaded.map(\.name), ["Client Photos 2026", "Wedding RAW"])
-
-        let legacy = """
-        ["legacy-folder-id-0001","legacy-folder-id-0002"]
-        """.data(using: .utf8)!
-        let decoded = BoundFolderStore.decode(legacy)
-        XCTAssertEqual(
-            decoded.map(\.id.raw),
-            ["legacy-folder-id-0001", "legacy-folder-id-0002"]
-        )
-        XCTAssertEqual(decoded.map(\.name), [nil, nil])
     }
 
     func testReadableProbeBeforeWaitingDoesNotBind() {
@@ -432,8 +423,10 @@ final class ShareAccessTests: XCTestCase {
         XCTAssertTrue(BoundFolderStore.load(buyerEmail: email).isEmpty)
     }
 
-    func testLegacyStoreDropsIDsThatAreNotFolderIDs() {
-        let data = "[\"legacy-folder-id-0001\",\"short\"]".data(using: .utf8)!
+    func testDecodeSkipsRecordsWithoutAFolderID() {
+        let data = """
+        [{"id":"legacy-folder-id-0001","name":"Kept"},{"id":"short"}]
+        """.data(using: .utf8)!
         XCTAssertEqual(BoundFolderStore.decode(data).map(\.id.raw), ["legacy-folder-id-0001"])
     }
 
@@ -530,10 +523,10 @@ final class ShareAccessTests: XCTestCase {
             retryAfterHeader: nil,
             now: now
         )
-        XCTAssertEqual(other, .other(statusCode: 503, detail: "busy"))
+        XCTAssertEqual(other, .other(statusCode: 503))
         XCTAssertEqual(
             ShareMintClient.failure(for: other).localizedDescription,
-            "Network problem. Share mint failed (HTTP 503). busy"
+            "Network problem. Share mint failed (HTTP 503)."
         )
         XCTAssertFalse(ShareMintClient.failure(for: other).requiresSignInAgain)
     }

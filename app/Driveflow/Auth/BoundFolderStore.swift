@@ -70,15 +70,8 @@ enum BoundFolderStore {
         )
     }
 
-    /// Accepts `[{id,name}]` and the older `[id]` array.
     static func decode(_ data: Data) -> [BoundFolderRecord] {
         guard let json = try? JSONSerialization.jsonObject(with: data) else { return [] }
-        if let ids = json as? [String] {
-            return ids.compactMap { raw in
-                guard let id = FolderID(raw) else { return nil }
-                return BoundFolderRecord(id: id, name: nil)
-            }
-        }
         if let records = json as? [[String: Any]] {
             return records.compactMap { dict in
                 guard let raw = dict["id"] as? String, let id = FolderID(raw) else { return nil }

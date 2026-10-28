@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 enum ShareMintClient {
     struct Session: Equatable, Sendable {
@@ -15,7 +14,7 @@ enum ShareMintClient {
         case backoff(TimeInterval)
         case rateLimited
         case mintFailed
-        case other(statusCode: Int, detail: String)
+        case other(statusCode: Int)
     }
 
     struct MintAPIResponse: Decodable {
@@ -25,24 +24,14 @@ enum ShareMintClient {
         let expiresAt: Double?
     }
 
-    static func mint(googleIDToken: String?) async throws -> Session {
-        if AppConfig.shareMintURL != nil {
-            let token = googleIDToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !token.isEmpty else {
-                throw AppError.authFailed(
-                    "Sign in again so Driveflow can verify your Google account before opening Drive."
-                )
-            }
-            return try await mintFromAPI(idToken: token)
+    static func mint(googleIDToken: String) async throws -> Session {
+        let token = googleIDToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            throw AppError.authFailed(
+                "Sign in again so Driveflow can verify your Google account before opening Drive."
+            )
         }
-        // No mint URL: dev-only local key or env token. API failures never reach this.
-        if let session = try await mintFromLocalServiceAccount() {
-            return session
-        }
-        if let session = sessionFromEnvToken() {
-            return session
-        }
-        throw AppError.shareAccessNotConfigured
+        return try await mintFromAPI(idToken: token)
     }
 
     /// How the mint server told us to proceed. `500` is mint failure; other 5xx stay `.other`.
@@ -150,8 +139,7 @@ enum ShareMintClient {
         case .mintFailed:
             return .mintFailed
         case .other:
-            let body = String(data: data, encoding: .utf8) ?? "HTTP \(statusCode)"
-            return .other(statusCode: statusCode, detail: body)
+            return .other(statusCode: statusCode)
         }
     }
 
@@ -167,8 +155,8 @@ enum ShareMintClient {
             return .shareMintRateLimited
         case .mintFailed:
             return .shareMintFailed
-        case .other(let statusCode, let detail):
-            return .network("Share mint failed (HTTP \(statusCode)). \(detail)")
+        case .other(let statusCode):
+            return .network("Share mint failed (HTTP \(statusCode)).")
         }
     }
 
@@ -193,10 +181,7 @@ enum ShareMintClient {
     }
 
     private static func mintFromAPI(idToken: String) async throws -> Session {
-        guard let url = AppConfig.shareMintURL else {
-            throw AppError.shareAccessNotConfigured
-        }
-
+        let url = AppConfig.shareMintURL
         var rateLimitRetries = 0
         while true {
             let request = mintRequest(url: url, googleIDToken: idToken)
@@ -218,7 +203,7 @@ enum ShareMintClient {
                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             case .reauthenticate, .unpaid, .rateLimited, .mintFailed:
                 throw failure(for: reply)
-            case .other(_, _):
+            case .other(_):
                 throw failure(for: reply)
             }
         }
@@ -230,172 +215,5 @@ enum ShareMintClient {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
         return formatter.date(from: header)
-    }
-
-    private static func sessionFromEnvToken() -> Session? {
-        let email = ProcessInfo.processInfo.environment["DRIVEFLOW_SHARE_EMAIL"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let token = ProcessInfo.processInfo.environment["DRIVEFLOW_SHARE_ACCESS_TOKEN"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let email, !email.isEmpty, let token, !token.isEmpty else { return nil }
-        let expiresIn = Double(
-            ProcessInfo.processInfo.environment["DRIVEFLOW_SHARE_TOKEN_EXPIRES_IN"] ?? "3500"
-        ) ?? 3500
-        return Session(
-            shareEmail: email,
-            accessToken: token,
-            expiresAt: Date().addingTimeInterval(expiresIn)
-        )
-    }
-
-    private static func mintFromLocalServiceAccount() async throws -> Session? {
-        guard let key = loadLocalServiceAccountKey() else { return nil }
-        return try await exchangeJWT(for: key)
-    }
-
-    private static func loadLocalServiceAccountKey() -> ServiceAccountKeyFile? {
-        let envPath = ProcessInfo.processInfo.environment["DRIVEFLOW_SA_KEY_PATH"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first?
-            .appendingPathComponent("Driveflow/service-account.json")
-        let candidates: [URL?] = [
-            envPath.map { URL(fileURLWithPath: $0) },
-            support,
-            URL(fileURLWithPath: #file)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("Resources/service-account.json"),
-        ]
-        for url in candidates {
-            guard let url,
-                  let data = try? Data(contentsOf: url),
-                  let key = try? JSONDecoder().decode(ServiceAccountKeyFile.self, from: data)
-            else { continue }
-            return key
-        }
-        return nil
-    }
-
-    private static func exchangeJWT(for key: ServiceAccountKeyFile) async throws -> Session {
-        let now = Date()
-        let assertion = try makeJWTAssertion(key: key, issuedAt: now)
-        var request = URLRequest(url: URL(string: key.tokenURI) ?? AppConfig.googleTokenEndpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        let encodedAssertion =
-            assertion.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? assertion
-        let body =
-            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=\(encodedAssertion)"
-        request.httpBody = Data(body.utf8)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw AppError.network("No response from Google token endpoint.")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            let message = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
-            throw AppError.authFailed("Service account token exchange failed. \(message)")
-        }
-        let json = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
-        guard let access = json["access_token"] as? String else {
-            throw AppError.authFailed("Service account token response missing access_token.")
-        }
-        let expiresIn = (json["expires_in"] as? Double) ?? 3600
-        return Session(
-            shareEmail: key.clientEmail,
-            accessToken: access,
-            expiresAt: now.addingTimeInterval(expiresIn)
-        )
-    }
-
-    private static func makeJWTAssertion(key: ServiceAccountKeyFile, issuedAt: Date) throws -> String {
-        let header: [String: Any] = [
-            "alg": "RS256",
-            "typ": "JWT",
-            "kid": key.privateKeyID,
-        ]
-        let iat = Int(issuedAt.timeIntervalSince1970)
-        let claims: [String: Any] = [
-            "iss": key.clientEmail,
-            "sub": key.clientEmail,
-            "scope": AppConfig.driveReadonlyScope,
-            "aud": key.tokenURI,
-            "iat": iat,
-            "exp": iat + 3600,
-        ]
-        let headerPart = try base64URLJSON(header)
-        let claimsPart = try base64URLJSON(claims)
-        let signingInput = "\(headerPart).\(claimsPart)"
-        let signature = try signRS256(signingInput, pemPrivateKey: key.privateKey)
-        return "\(signingInput).\(signature)"
-    }
-
-    private static func base64URLJSON(_ object: [String: Any]) throws -> String {
-        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        return base64URL(data)
-    }
-
-    private static func base64URL(_ data: Data) -> String {
-        data.base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-    }
-
-    private static func signRS256(_ message: String, pemPrivateKey: String) throws -> String {
-        let key = try secKey(fromPKCS8PEM: pemPrivateKey)
-        guard let messageData = message.data(using: .utf8) else {
-            throw AppError.authFailed("Couldn’t encode JWT signing input.")
-        }
-        var error: Unmanaged<CFError>?
-        guard let signature = SecKeyCreateSignature(
-            key,
-            .rsaSignatureMessagePKCS1v15SHA256,
-            messageData as CFData,
-            &error
-        ) as Data?
-        else {
-            let detail = error?.takeRetainedValue().localizedDescription ?? "signature failed"
-            throw AppError.authFailed("Couldn’t sign service-account JWT. \(detail)")
-        }
-        return base64URL(signature)
-    }
-
-    private static func secKey(fromPKCS8PEM pem: String) throws -> SecKey {
-        let stripped = pem
-            .replacingOccurrences(of: "-----BEGIN PRIVATE KEY-----", with: "")
-            .replacingOccurrences(of: "-----END PRIVATE KEY-----", with: "")
-            .replacingOccurrences(of: "\n", with: "")
-            .replacingOccurrences(of: "\r", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let der = Data(base64Encoded: stripped) else {
-            throw AppError.authFailed("Invalid service-account private key PEM.")
-        }
-        let attributes: [String: Any] = [
-            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
-            kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
-        ]
-        var error: Unmanaged<CFError>?
-        guard let key = SecKeyCreateWithData(der as CFData, attributes as CFDictionary, &error) else {
-            let detail = error?.takeRetainedValue().localizedDescription ?? "SecKeyCreateWithData failed"
-            throw AppError.authFailed("Couldn’t load service-account private key. \(detail)")
-        }
-        return key
-    }
-}
-
-/// Google Cloud service-account key file (local/dev only).
-private struct ServiceAccountKeyFile: Decodable {
-    let privateKeyID: String
-    let privateKey: String
-    let clientEmail: String
-    let tokenURI: String
-
-    enum CodingKeys: String, CodingKey {
-        case privateKeyID = "private_key_id"
-        case privateKey = "private_key"
-        case clientEmail = "client_email"
-        case tokenURI = "token_uri"
     }
 }
