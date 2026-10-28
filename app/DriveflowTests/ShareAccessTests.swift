@@ -367,4 +367,174 @@ final class ShareAccessTests: XCTestCase {
         )
         XCTAssertEqual(decoded.map(\.name), [nil, nil])
     }
+
+    func testReadableProbeBeforeWaitingDoesNotBind() {
+        var flow = ShareOnboarding()
+        flow.setLink(folderID)
+        let action = flow.apply(probe: .readable(bindID: folder, name: "Client Photos 2026"))
+        XCTAssertEqual(action, .idle)
+        XCTAssertEqual(flow.phase, .linkParsed(folder))
+    }
+
+    func testNotAFolderStaysFailedIfAccessArrivesLater() {
+        var flow = ShareOnboarding()
+        flow.setLink(folderID)
+        flow.copyTapped()
+        XCTAssertEqual(flow.apply(probe: .notAFolder), .showNotAFolder)
+        let later = flow.apply(probe: .readable(bindID: folder, name: "Client Photos 2026"))
+        XCTAssertEqual(later, .idle)
+        XCTAssertEqual(flow.phase, .failed(folder))
+    }
+
+    func testShortcutBindRecordsTheTargetFolder() {
+        var flow = ShareOnboarding()
+        flow.setLink(folderID)
+        flow.copyTapped()
+        let action = flow.apply(probe: .readable(bindID: shortcutTarget, name: "Client Photos 2026"))
+        XCTAssertEqual(action, .bind(folderID: shortcutTarget, name: "Client Photos 2026"))
+        XCTAssertEqual(flow.phase, .bound(shortcutTarget))
+        XCTAssertEqual(flow.apply(probe: .readable(bindID: shortcutTarget, name: "Again")), .idle)
+    }
+
+    func testUnauthorizedStreakRefreshesOnce() {
+        var retry = UnauthorizedRetry()
+        XCTAssertTrue(retry.shouldRefresh)
+        retry.markRefreshed()
+        XCTAssertFalse(retry.shouldRefresh)
+        retry.clear()
+        XCTAssertTrue(retry.shouldRefresh)
+    }
+
+    func testBindingTheSameFolderTwiceKeepsOneRecord() {
+        let email = "bind-twice-\(UUID().uuidString)@example.com"
+        defer { BoundFolderStore.clear(buyerEmail: email) }
+
+        BoundFolderStore.bind(
+            BoundFolderRecord(id: folder, name: "Client Photos 2026"),
+            buyerEmail: email
+        )
+        BoundFolderStore.bind(BoundFolderRecord(id: folder, name: nil), buyerEmail: email)
+        BoundFolderStore.bind(
+            BoundFolderRecord(id: folder, name: "Client Photos 2026"),
+            buyerEmail: email
+        )
+
+        XCTAssertEqual(
+            BoundFolderStore.loadOrdered(buyerEmail: email),
+            [BoundFolderRecord(id: folder, name: "Client Photos 2026")]
+        )
+    }
+
+    func testRenamingAMissingFolderDoesNotCreateOne() {
+        let email = "rename-missing-\(UUID().uuidString)@example.com"
+        defer { BoundFolderStore.clear(buyerEmail: email) }
+        BoundFolderStore.updateName(id: folder, name: "Nope", buyerEmail: email)
+        XCTAssertTrue(BoundFolderStore.load(buyerEmail: email).isEmpty)
+    }
+
+    func testLegacyStoreDropsIDsThatAreNotFolderIDs() {
+        let data = "[\"legacy-folder-id-0001\",\"short\"]".data(using: .utf8)!
+        XCTAssertEqual(BoundFolderStore.decode(data).map(\.id.raw), ["legacy-folder-id-0001"])
+    }
+
+    func testMintReplyMapsServerStatuses() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let body = """
+        {"shareEmail":"lic-test@driveflow-503421.iam.gserviceaccount.com","accessToken":"ya29.test-token","expiresIn":120,"expiresAt":1700003600}
+        """.data(using: .utf8)!
+
+        let ready = try ShareMintClient.interpretReply(
+            statusCode: 200,
+            data: body,
+            retryAttempt: 0,
+            retryAfterHeader: nil,
+            now: now
+        )
+        guard case .ready(let session) = ready else {
+            XCTFail("200 should be a session")
+            return
+        }
+        XCTAssertEqual(session.expiresAt, Date(timeIntervalSince1970: 1_700_003_600))
+
+        let unauthorized = try ShareMintClient.interpretReply(
+            statusCode: 401,
+            data: Data(),
+            retryAttempt: 0,
+            retryAfterHeader: nil,
+            now: now
+        )
+        XCTAssertEqual(unauthorized, .reauthenticate)
+        let signInAgain = ShareMintClient.failure(for: unauthorized)
+        XCTAssertTrue(signInAgain.requiresSignInAgain)
+        XCTAssertEqual(
+            signInAgain.localizedDescription,
+            "Your Driveflow sign-in expired. Sign in again to continue."
+        )
+
+        let unpaid = try ShareMintClient.interpretReply(
+            statusCode: 402,
+            data: Data(),
+            retryAttempt: 0,
+            retryAfterHeader: nil,
+            now: now
+        )
+        XCTAssertEqual(unpaid, .unpaid)
+        let unpaidError = ShareMintClient.failure(for: unpaid)
+        XCTAssertTrue(unpaidError.requiresSignInAgain)
+        XCTAssertEqual(
+            unpaidError.localizedDescription,
+            "No Driveflow license for this Google account. Buy a license with this email to continue."
+        )
+
+        let backoff = try ShareMintClient.interpretReply(
+            statusCode: 429,
+            data: Data(),
+            retryAttempt: 0,
+            retryAfterHeader: nil,
+            now: now
+        )
+        XCTAssertEqual(backoff, .backoff(1))
+
+        let limited = try ShareMintClient.interpretReply(
+            statusCode: 429,
+            data: Data(),
+            retryAttempt: ShareMintClient.maxRateLimitRetries,
+            retryAfterHeader: "9",
+            now: now
+        )
+        XCTAssertEqual(limited, .rateLimited)
+        XCTAssertFalse(ShareMintClient.failure(for: limited).requiresSignInAgain)
+        XCTAssertEqual(
+            ShareMintClient.failure(for: limited).localizedDescription,
+            "Driveflow is busy opening Drive access. Wait a moment and try again."
+        )
+
+        let failed = try ShareMintClient.interpretReply(
+            statusCode: 500,
+            data: Data("no".utf8),
+            retryAttempt: 0,
+            retryAfterHeader: nil,
+            now: now
+        )
+        XCTAssertEqual(failed, .mintFailed)
+        XCTAssertFalse(ShareMintClient.failure(for: failed).requiresSignInAgain)
+        XCTAssertEqual(
+            ShareMintClient.failure(for: failed).localizedDescription,
+            "Driveflow couldn’t open Drive access. Try again in a moment."
+        )
+
+        let other = try ShareMintClient.interpretReply(
+            statusCode: 503,
+            data: Data("busy".utf8),
+            retryAttempt: 0,
+            retryAfterHeader: nil,
+            now: now
+        )
+        XCTAssertEqual(other, .other(statusCode: 503, detail: "busy"))
+        XCTAssertEqual(
+            ShareMintClient.failure(for: other).localizedDescription,
+            "Network problem. Share mint failed (HTTP 503). busy"
+        )
+        XCTAssertFalse(ShareMintClient.failure(for: other).requiresSignInAgain)
+    }
 }
