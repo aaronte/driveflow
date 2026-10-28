@@ -17,12 +17,15 @@ enum BoundFolderStore {
     }
 
     private static func fileURL(forBuyerEmail email: String) -> URL {
-        let safe = email
+        let normalized = email
             .lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "@", with: "_at_")
-            .replacingOccurrences(of: "/", with: "_")
-        return directory.appendingPathComponent("bound-folders-\(safe).json")
+        // Percent-encoding is injective. Replacing "@" with "_at_" collides
+        // `a@b_at_c.com` with `a_at_b@c.com` and mixes two buyers' folders.
+        let encoded = normalized.addingPercentEncoding(
+            withAllowedCharacters: .alphanumerics
+        ) ?? "unknown"
+        return directory.appendingPathComponent("bound-folders-\(encoded).json")
     }
 
     static func load(buyerEmail: String) -> Set<FolderID> {

@@ -255,7 +255,7 @@ actor RcloneEngine {
         }
         // backend/command may return the error inline without a job id
         if let err = response["error"] as? String, !err.isEmpty {
-            throw AppError.rcloneFailed(err)
+            throw AppError.rcloneFailed(RcloneSecretText.scrubbingCredentials(err))
         }
         throw AppError.rcloneFailed("Couldn’t start copy.")
     }
@@ -284,7 +284,7 @@ actor RcloneEngine {
     func jobStatus(_ jobID: String) async throws -> (finished: Bool, error: String?) {
         let json = try await rc("job/status", body: ["jobid": Int(jobID) ?? jobID])
         let finished = (json["finished"] as? Bool) ?? false
-        let error = json["error"] as? String
+        let error = (json["error"] as? String).map(RcloneSecretText.scrubbingCredentials)
         let succeeded = (json["success"] as? Bool) ?? false
         if finished, !succeeded, error?.isEmpty != false {
             return (true, "The download engine stopped without completing the transfer.")
@@ -326,14 +326,7 @@ actor RcloneEngine {
         guard let driveToken, !driveToken.isEmpty else {
             throw AppError.rcloneFailed("Drive access expired. Sign in again.")
         }
-        var parameters = [
-            "scope=drive.readonly",
-            "token='\(driveToken.replacingOccurrences(of: "'", with: ""))'",
-        ]
-        if let extra, !extra.isEmpty {
-            parameters.append(extra)
-        }
-        return ":drive,\(parameters.joined(separator: ",")):"
+        return RcloneDriveRemote.fsString(tokenJSON: driveToken, extra: extra)
     }
 
     private func makeEphemeralConfigDirectory() throws -> URL {
@@ -376,7 +369,9 @@ actor RcloneEngine {
             throw AppError.rcloneFailed("No response from engine.")
         }
         guard (200..<300).contains(http.statusCode) else {
-            let message = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            let message = RcloneSecretText.scrubbingCredentials(
+                String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            )
             throw AppError.rcloneFailed(message)
         }
         if data.isEmpty { return [:] }
@@ -454,5 +449,40 @@ actor RcloneEngine {
         if let n = value as? Double { return n }
         if let n = value as? NSNumber { return n.doubleValue }
         return 0
+    }
+}
+
+/// rclone 1.71 keeps a quoted connection-string value intact, including commas and colons.
+enum RcloneDriveRemote {
+    static func fsString(tokenJSON: String, extra: String?) -> String {
+        let quotedToken = "'" + tokenJSON.replacingOccurrences(of: "'", with: "''") + "'"
+        var parameters = [
+            "scope=drive.readonly",
+            "token=\(quotedToken)",
+        ]
+        if let extra, !extra.isEmpty {
+            parameters.append(extra)
+        }
+        return ":drive,\(parameters.joined(separator: ",")):"
+    }
+}
+
+enum RcloneSecretText {
+    static func scrubbingCredentials(_ text: String) -> String {
+        var result = text
+        let patterns = [
+            "\"access_token\"\\s*:\\s*\"[^\"\\\\]*\"",
+            "ya29\\.[A-Za-z0-9._\\-]+",
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: range,
+                withTemplate: "redacted"
+            )
+        }
+        return result
     }
 }

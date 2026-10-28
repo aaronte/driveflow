@@ -10,23 +10,32 @@ enum CredentialStore {
     /// errSecMissingEntitlement — Data Protection / restricted keychain without entitlements.
     private static let missingEntitlement: OSStatus = -34018
     private static var didMigrate = false
+    static var testingLegacyDirectory: URL? {
+        didSet { didMigrate = false }
+    }
+    static var testingKeychainService: String? {
+        didSet { didMigrate = false }
+    }
 
     static func set(_ value: String, account: String) throws {
-        migrateFromFileIfNeeded()
+        try migrateFromFileIfNeeded()
         try withoutKeychainUI {
             try setKeychain(value, account: account)
         }
     }
 
     static func get(account: String) throws -> String? {
-        migrateFromFileIfNeeded()
+        try migrateFromFileIfNeeded()
         return try withoutKeychainUI {
             try getKeychain(account: account)
         }
     }
 
     static func delete(account: String) {
-        migrateFromFileIfNeeded()
+        // Drop the account from the legacy file before touching the Keychain.
+        // A failed Keychain write must not be able to restore a signed-out secret.
+        scrubLegacyAccount(account)
+        try? migrateFromFileIfNeeded()
         withoutKeychainUI {
             SecItemDelete(baseQuery(account: account) as CFDictionary)
         }
@@ -40,34 +49,76 @@ enum CredentialStore {
         return try body()
     }
 
-    private static func migrateFromFileIfNeeded() {
+    private static func migrateFromFileIfNeeded() throws {
         guard !didMigrate else { return }
         let url = legacyFileURL
         guard FileManager.default.fileExists(atPath: url.path) else {
             didMigrate = true
             return
         }
-        guard let data = try? Data(contentsOf: url),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: String]
-        else {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            if FileManager.default.fileExists(atPath: url.path) {
+                throw CredentialStoreError.legacyFile
+            }
+            didMigrate = true
+            return
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
             try? FileManager.default.removeItem(at: url)
             didMigrate = true
             return
         }
         for (account, value) in json where !value.isEmpty {
-            do {
-                try withoutKeychainUI {
-                    try setKeychain(value, account: account)
-                }
-            } catch {
-                return
+            try withoutKeychainUI {
+                try setKeychain(value, account: account)
             }
         }
-        try? FileManager.default.removeItem(at: url)
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            // Already removed.
+        } catch {
+            throw CredentialStoreError.legacyFile
+        }
         didMigrate = true
     }
 
+    private static func scrubLegacyAccount(_ account: String) {
+        let url = legacyFileURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        guard let data = try? Data(contentsOf: url),
+              var json = try? JSONSerialization.jsonObject(with: data) as? [String: String]
+        else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        json.removeValue(forKey: account)
+        if json.isEmpty {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        guard let updated = try? JSONSerialization.data(withJSONObject: json) else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        if (try? updated.write(to: url, options: [.atomic])) == nil {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
+    }
+
     private static var legacyFileURL: URL {
+        if let testingLegacyDirectory {
+            return testingLegacyDirectory.appendingPathComponent("session.tokens")
+        }
         let directory = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -127,7 +178,7 @@ enum CredentialStore {
     private static func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
+            kSecAttrService as String: testingKeychainService ?? service,
             kSecAttrAccount as String: account,
         ]
     }
@@ -135,6 +186,7 @@ enum CredentialStore {
 
 enum CredentialStoreError: LocalizedError {
     case unhandled(OSStatus)
+    case legacyFile
 
     var errorDescription: String? {
         switch self {
@@ -146,6 +198,8 @@ enum CredentialStoreError: LocalizedError {
                 return "macOS blocked credential access for this unsigned build."
             }
             return "Credential store error (\(status)). Try signing in again."
+        case .legacyFile:
+            return "Saved sign-in couldn’t be moved into the Keychain. Try again."
         }
     }
 }
