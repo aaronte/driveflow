@@ -4,7 +4,7 @@ enum AppConfig {
     static let appName = "Driveflow"
     static let bundleID = "com.aaronte.driveflow"
 
-    /// Google OAuth Desktop client credentials.
+    /// Google OAuth Desktop client credentials (identity only — openid/email).
     ///
     /// Resolution order (first non-empty wins):
     /// 1. `DRIVEFLOW_GOOGLE_CLIENT_ID` / `DRIVEFLOW_GOOGLE_CLIENT_SECRET` env vars
@@ -64,9 +64,8 @@ enum AppConfig {
     static let googleTokenEndpoint = URL(string: "https://oauth2.googleapis.com/token")!
     static let googleRevokeEndpoint = URL(string: "https://oauth2.googleapis.com/revoke")!
 
-    /// Drive access plus email (needed for license checks after sign-in).
-    static let oauthScopes = "openid email https://www.googleapis.com/auth/drive.readonly"
-    static let driveScope = oauthScopes
+    /// Purchaser identity only — Drive files are accessed via a service-account token.
+    static let oauthScopes = "openid email"
     static let driveAPIBase = URL(string: "https://www.googleapis.com/drive/v3")!
 
     static let rcloneRCUser = "driveflow"
@@ -84,6 +83,25 @@ enum AppConfig {
             return url
         }
         return URL(string: "https://usedriveflow.app/api/license/check")!
+    }
+
+    static let productionShareMintURL = URL(string: "https://usedriveflow.app/api/drive/session")!
+
+    /// `DRIVEFLOW_SHARE_MINT_URL` overrides the production mint URL for every build.
+    static var shareMintURL: URL {
+        resolvedShareMintURL(
+            environmentOverride: ProcessInfo.processInfo.environment["DRIVEFLOW_SHARE_MINT_URL"]
+        )
+    }
+
+    static func resolvedShareMintURL(environmentOverride: String?) -> URL {
+        if let raw = environmentOverride?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty,
+           let url = URL(string: raw),
+           url.scheme == "https" || url.scheme == "http" {
+            return url
+        }
+        return productionShareMintURL
     }
 
     /// Paid notarized builds set `DRIVEFLOW_PAID_BUILD` at compile time (see release script).

@@ -8,11 +8,14 @@ final class AuthSession: NSObject, ObservableObject {
     @Published private(set) var userEmail: String?
     @Published private(set) var isBusy = false
     @Published var lastError: AppError?
+    /// Share session returned by an extended license check (buyer email → SA token).
+    @Published private(set) var pendingShareSession: ShareMintClient.Session?
 
     private let accessAccount = "google.access"
     private let refreshAccount = "google.refresh"
     private let emailAccount = "google.email"
     private let expiryAccount = "google.expiry"
+    private let idTokenAccount = "google.id_token"
     private let signInTimeoutSeconds: TimeInterval = 180
 
     private static let formAllowedCharacters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
@@ -23,10 +26,6 @@ final class AuthSession: NSObject, ObservableObject {
     override init() {
         super.init()
         Task { await restoreSession() }
-    }
-
-    var accessToken: String? {
-        try? CredentialStore.get(account: accessAccount)
     }
 
     func restoreSession() async {
@@ -167,9 +166,32 @@ final class AuthSession: NSObject, ObservableObject {
         clearTokens()
         isSignedIn = false
         userEmail = nil
+        pendingShareSession = nil
         if let tokenToRevoke, !tokenToRevoke.isEmpty {
             Task { await Self.revokeGoogleGrant(token: tokenToRevoke) }
         }
+    }
+
+    /// Google OpenID Connect ID token from the Desktop sign-in (`openid email`).
+    /// Refreshes the grant when the stored token is missing or near expiry.
+    /// Sent to the share-mint server as `Authorization: Bearer`.
+    func validIDToken() async throws -> String {
+        if let token = try CredentialStore.get(account: idTokenAccount),
+           GoogleIDToken.isFresh(token) {
+            return token
+        }
+        guard let refresh = try CredentialStore.get(account: refreshAccount), !refresh.isEmpty else {
+            throw AppError.tokenExpired
+        }
+        try await refreshAccessToken(using: refresh)
+        guard let token = try CredentialStore.get(account: idTokenAccount),
+              GoogleIDToken.isFresh(token)
+        else {
+            throw AppError.authFailed(
+                "Google didn’t return an ID token. Sign in again so Driveflow can verify your account."
+            )
+        }
+        return token
     }
 
     func validAccessToken() async throws -> String {
@@ -189,25 +211,10 @@ final class AuthSession: NSObject, ObservableObject {
         return token
     }
 
-    /// rclone-compatible OAuth token JSON for configuring the Drive remote.
-    func rcloneTokenJSON() async throws -> String {
-        let access = try await validAccessToken()
-        let refresh = (try? CredentialStore.get(account: refreshAccount)) ?? ""
-        let expiryDate: Date
-        if let expiryString = try? CredentialStore.get(account: expiryAccount),
-           let expiry = TimeInterval(expiryString) {
-            expiryDate = Date(timeIntervalSince1970: expiry)
-        } else {
-            expiryDate = Date().addingTimeInterval(3600)
-        }
-        let payload: [String: Any] = [
-            "access_token": access,
-            "token_type": "Bearer",
-            "refresh_token": refresh,
-            "expiry": ISO8601DateFormatter().string(from: expiryDate),
-        ]
-        let data = try JSONSerialization.data(withJSONObject: payload)
-        return String(data: data, encoding: .utf8) ?? "{}"
+    func consumePendingShareSession() -> ShareMintClient.Session? {
+        let session = pendingShareSession
+        pendingShareSession = nil
+        return session
     }
 
     private func exchangeCode(_ code: String, verifier: String, redirectURI: String) async throws {
@@ -267,6 +274,14 @@ final class AuthSession: NSObject, ObservableObject {
         let expiresIn = (json["expires_in"] as? Double) ?? 3600
         let expiry = Date().timeIntervalSince1970 + expiresIn
         try CredentialStore.set(String(expiry), account: expiryAccount)
+        // Both the authorization-code exchange and refresh-token grant land here.
+        // Keep the previous ID token when a refresh response omits a new one.
+        if let idToken = json["id_token"] as? String {
+            let trimmed = idToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                try CredentialStore.set(trimmed, account: idTokenAccount)
+            }
+        }
     }
 
     private func fetchUserInfo() async throws {
@@ -290,16 +305,18 @@ final class AuthSession: NSObject, ObservableObject {
     }
 
     /// Paid builds: require a matching purchase email before treating the session as signed in.
+    /// When the license server also returns share credentials, stash them for DriveAccessSession.
     private func enforcePaidLicenseIfNeeded() async throws {
         guard AppConfig.requiresPaidLicense else { return }
         guard let email = userEmail?.trimmingCharacters(in: .whitespacesAndNewlines), !email.isEmpty else {
             throw AppError.licenseRequired(email: nil)
         }
         do {
-            let allowed = try await LicenseClient.hasLicense(email: email)
-            if !allowed {
+            let result = try await LicenseClient.check(email: email)
+            if !result.allowed {
                 throw AppError.licenseRequired(email: email)
             }
+            pendingShareSession = result.shareSession
         } catch let error as AppError {
             throw error
         } catch {
@@ -313,6 +330,7 @@ final class AuthSession: NSObject, ObservableObject {
         CredentialStore.delete(account: refreshAccount)
         CredentialStore.delete(account: emailAccount)
         CredentialStore.delete(account: expiryAccount)
+        CredentialStore.delete(account: idTokenAccount)
     }
 
     /// Best-effort remote revoke; local sign-out must not fail if offline.

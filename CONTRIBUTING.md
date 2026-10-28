@@ -4,7 +4,8 @@
 
 - macOS 14+, Apple Silicon
 - Xcode 15+
-- A Google Cloud **Desktop** OAuth client (see the README)
+- A Google Cloud **Desktop** OAuth client (identity: `openid email`)
+- A Google Cloud **service account** for Drive share-access (see [docs/SHARE_ACCESS.md](docs/SHARE_ACCESS.md))
 
 ## Setup
 

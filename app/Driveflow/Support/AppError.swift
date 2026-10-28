@@ -2,6 +2,9 @@ import Foundation
 
 enum AppError: LocalizedError, Identifiable {
     case notConfigured
+    case shareMintUnauthorized
+    case shareMintRateLimited
+    case shareMintFailed
     case authCancelled
     case authFailed(String)
     case authRevoked(String)
@@ -22,6 +25,12 @@ enum AppError: LocalizedError, Identifiable {
         switch self {
         case .notConfigured:
             return "Google sign-in isn’t set up yet. Add Desktop OAuth credentials via env vars or oauth-client.json (see README)."
+        case .shareMintUnauthorized:
+            return "Your Driveflow sign-in expired. Sign in again to continue."
+        case .shareMintRateLimited:
+            return "Driveflow is busy opening Drive access. Wait a moment and try again."
+        case .shareMintFailed:
+            return "Driveflow couldn’t open Drive access. Try again in a moment."
         case .authCancelled:
             return "Sign-in was cancelled."
         case .authFailed(let detail):
@@ -34,7 +43,7 @@ enum AppError: LocalizedError, Identifiable {
             }
             return "No Driveflow license for this Google account. Buy a license with this email to continue."
         case .tokenExpired:
-            return "Your Google session expired. Sign in again."
+            return "Your Driveflow session expired. Sign in again."
         case .network(let detail):
             return "Network problem. \(detail)"
         case .driveAPI(let detail):
@@ -58,6 +67,12 @@ enum AppError: LocalizedError, Identifiable {
         switch self {
         case .notConfigured:
             return "Copy oauth-client.example.json to oauth-client.json, or set DRIVEFLOW_GOOGLE_CLIENT_ID and DRIVEFLOW_GOOGLE_CLIENT_SECRET."
+        case .shareMintUnauthorized:
+            return "Choose Sign in with Google to continue."
+        case .shareMintRateLimited:
+            return "The Drive session service asked Driveflow to slow down."
+        case .shareMintFailed:
+            return "If this keeps happening, sign out and sign in again."
         case .licenseRequired:
             return "Purchase at usedriveflow.app using this Google email, then sign in again."
         case .authCancelled, .authFailed, .authRevoked, .tokenExpired:
@@ -72,6 +87,18 @@ enum AppError: LocalizedError, Identifiable {
             return "Resume the transfer when ready. Already-downloaded files will be skipped."
         case .unknown:
             return nil
+        }
+    }
+
+    var requiresSignInAgain: Bool {
+        switch self {
+        case .shareMintUnauthorized, .licenseRequired, .tokenExpired, .authRevoked:
+            return true
+        case .notConfigured, .shareMintRateLimited, .shareMintFailed,
+             .authCancelled, .authFailed, .network,
+             .driveAPI, .destinationUnavailable, .insufficientSpace, .volumeWarning,
+             .rcloneMissing, .rcloneFailed, .unknown:
+            return false
         }
     }
 }

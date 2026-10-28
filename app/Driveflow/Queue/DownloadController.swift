@@ -10,15 +10,15 @@ final class DownloadController: ObservableObject {
     @Published private(set) var isEngineReady = false
 
     private let store = JobStore()
-    private let auth: AuthSession
+    private let driveAccess: DriveAccessSession
     private let drive: DriveClient
     private let engine = RcloneEngine()
     private var pollTask: Task<Void, Never>?
     private var activity: NSObjectProtocol?
     private var storeObservation: AnyCancellable?
 
-    init(auth: AuthSession, drive: DriveClient) {
-        self.auth = auth
+    init(driveAccess: DriveAccessSession, drive: DriveClient) {
+        self.driveAccess = driveAccess
         self.drive = drive
         storeObservation = store.objectWillChange.sink { [weak self] _ in
             Task { @MainActor in
@@ -56,6 +56,7 @@ final class DownloadController: ObservableObject {
         } catch let error as AppError {
             lastError = error
             isEngineReady = false
+            recordAuthFailure(error)
         } catch {
             lastError = .rcloneFailed(error.localizedDescription)
             isEngineReady = false
@@ -76,6 +77,7 @@ final class DownloadController: ObservableObject {
             }
         } catch let error as AppError {
             lastError = error
+            recordAuthFailure(error)
         } catch {
             lastError = .unknown(error.localizedDescription)
         }
@@ -133,6 +135,7 @@ final class DownloadController: ObservableObject {
                 $0.rcloneJobIDs = []
             }
             lastError = error
+            recordAuthFailure(error)
             await startNextQueued()
         } catch {
             await failClosedStart(jobID: jobID, startedIDs: startedRcloneJobIDs)
@@ -213,8 +216,14 @@ final class DownloadController: ObservableObject {
         _ = detachActiveTransfer(ifJobID: jobID)
     }
 
+    private func recordAuthFailure(_ error: AppError) {
+        if error.requiresSignInAgain {
+            driveAccess.noteUnrecoverableDriveAuth()
+        }
+    }
+
     private func injectToken() async throws {
-        try await engine.configureDrive(tokenJSON: try await auth.rcloneTokenJSON())
+        try await engine.configureDrive(tokenJSON: try await driveAccess.rcloneTokenJSON())
     }
 
     private func startPolling(jobID: UUID) {

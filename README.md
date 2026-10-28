@@ -2,13 +2,23 @@
 
 Google Drive downloads, at the speed of your connection.
 
-A native SwiftUI Mac app (Apple Silicon, macOS 14+) that browses Google Drive and downloads files or folders without Chrome’s split-ZIP flow. Transfers use a bundled [rclone](https://rclone.org) engine for multi-threaded downloads, progress, pause/resume, and skip-existing.
+A native SwiftUI Mac app (Apple Silicon, macOS 14+) that browses folders **shared with a Driveflow service-account email** and downloads them with a bundled [rclone](https://rclone.org) engine — without Chrome’s split-ZIP flow and without the Google Picker.
 
 A signed build is at [usedriveflow.app](https://usedriveflow.app).
 
+## How it works
+
+1. **Sign in with Google** uses `openid email` only — that email is the **purchaser / license** identity. The ID token from that sign-in is what the mint server verifies.
+2. **Add a folder**: paste a Google Drive folder link. Driveflow shows your **service-account share address** (e.g. `lic-….@driveflow-503421.iam.gserviceaccount.com`).
+3. Share that folder as **Viewer**, and **uncheck Notify people** (SAs have no inbox). **Open sharing in Drive** jumps to the folder.
+4. The app polls `files.get` on the pasted folder until the service account can read it, then opens the browser rooted at folders you added.
+5. Browse and download use a **short-lived SA access token** (never a user `drive.readonly` grant, never an SA JSON key inside the app).
+
+See [docs/SHARE_ACCESS.md](docs/SHARE_ACCESS.md) for the mint API contract, GCP setup, and isolation notes.
+
 ## Setup
 
-You need macOS 14+, Apple Silicon, Xcode 15+, and a Google Cloud **Desktop** OAuth client with the Drive API enabled.
+You need macOS 14+, Apple Silicon, Xcode 15+, a Google Cloud **Desktop** OAuth client (identity), and a **service account** in project `driveflow-503421` (or your own project for local testing) with the Drive API enabled.
 
 ### 1. Fetch rclone
 
@@ -16,12 +26,11 @@ You need macOS 14+, Apple Silicon, Xcode 15+, and a Google Cloud **Desktop** OAu
 ./scripts/fetch-rclone.sh
 ```
 
-### 2. Add a Google OAuth client
+### 2. Google OAuth client (purchaser identity)
 
-1. In Google Cloud, enable the **Drive API**.
-2. OAuth consent screen → External → Testing → scope `https://www.googleapis.com/auth/drive.readonly`.
-3. Create an OAuth client of type **Desktop**.
-4. While the app is in Testing, add yourself as a test user.
+1. In Google Cloud, create/use an OAuth client of type **Desktop**.
+2. Consent screen scopes needed in the app: `openid` and `email` only (no Drive scope on the user).
+3. While the app is in Testing, add yourself as a test user.
 
 Sign-in uses a loopback redirect (`http://127.0.0.1:<port>`), not a custom URL scheme.
 
@@ -32,11 +41,15 @@ cp app/Driveflow/Resources/oauth-client.example.json \
    app/Driveflow/Resources/oauth-client.json
 ```
 
-and paste your `client_id` and `client_secret` into that file, or set `DRIVEFLOW_GOOGLE_CLIENT_ID` and `DRIVEFLOW_GOOGLE_CLIENT_SECRET` in the Xcode scheme / your shell.
+and paste your `client_id` and `client_secret`, or set `DRIVEFLOW_GOOGLE_CLIENT_ID` and `DRIVEFLOW_GOOGLE_CLIENT_SECRET`.
 
 You can also put the same JSON at `~/Library/Application Support/Driveflow/oauth-client.json`.
 
-### 3. Generate the Xcode project
+### 3. Drive access
+
+The app mints a short-lived Drive token at `https://usedriveflow.app/api/drive/session` (`DRIVEFLOW_SHARE_MINT_URL` overrides). The call is `POST` with `Authorization: Bearer <Google ID token>` and body `{ "idToken" }`. The response is `{ shareEmail, accessToken, expiresIn, expiresAt }`. The Mac app does not load a service-account JSON key. See [docs/SHARE_ACCESS.md](docs/SHARE_ACCESS.md).
+
+### 4. Generate the Xcode project
 
 `app/project.yml` is the source of truth.
 

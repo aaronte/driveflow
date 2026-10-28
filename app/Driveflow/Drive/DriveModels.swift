@@ -7,11 +7,13 @@ struct DriveItem: Identifiable, Hashable, Sendable {
     let size: Int64?
     let modifiedTime: Date?
     let md5Checksum: String?
+    /// Parent folder IDs from Drive (used for bound-folder search filtering).
+    let parentIDs: [String]
     let shortcutTargetId: String?
     let shortcutTargetMimeType: String?
     let isFolder: Bool
     let isGoogleNative: Bool
-    /// True for shared-drive roots from `drives.list` (ID is a team drive, not a folder).
+    /// Team-drive root. The id is a drive, not a folder. Saved download jobs can still set this.
     let isSharedDriveRoot: Bool
 
     /// ID rclone should fetch (shortcut target when present).
@@ -59,18 +61,22 @@ struct DriveBreadcrumb: Identifiable, Hashable, Sendable {
     let name: String
 }
 
-enum DriveRoot: String, CaseIterable, Identifiable {
-    case myDrive
-    case sharedWithMe
-    case sharedDrives
+/// Virtual root above the folders a buyer has shared with Driveflow.
+enum BoundFolderBrowse {
+    static let rootCrumbID = "shared-with-driveflow"
+    static let rootTitle = "Shared with Driveflow"
+}
 
-    var id: String { rawValue }
+struct BoundFolderSummary: Identifiable, Hashable, Sendable {
+    let id: String
+    var name: String
+    var itemCount: Int?
+    var itemCountIsLowerBound: Bool
 
-    var title: String {
-        switch self {
-        case .myDrive: return "My Drive"
-        case .sharedWithMe: return "Shared with me"
-        case .sharedDrives: return "Shared drives"
-        }
+    var itemCountLabel: String? {
+        guard let itemCount else { return nil }
+        let formatted = itemCount.formatted(.number.grouping(.automatic))
+        if itemCountIsLowerBound { return "\(formatted)+" }
+        return formatted
     }
 }

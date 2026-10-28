@@ -33,9 +33,6 @@ struct TransferStats: Equatable, Sendable {
 }
 
 actor RcloneEngine {
-    /// Isolated remote name — never touch the user's default rclone remotes.
-    private static let remoteName = "driveflow"
-
     private var process: Process?
     /// Mirrored for synchronous terminate-on-quit (Process.terminate is thread-safe enough).
     nonisolated(unsafe) private var shutdownProcess: Process?
@@ -44,6 +41,8 @@ actor RcloneEngine {
     private var lastTermination: String?
     private var rcPort: UInt16 = 0
     private var rcPass = ""
+    private var driveToken: String?
+    private var ephemeralConfigDirectory: URL?
     private let rcUser = AppConfig.rcloneRCUser
 
     private var binaryURL: URL {
@@ -63,8 +62,8 @@ actor RcloneEngine {
         return directory
     }
 
-    /// App-private rclone config — never `~/.config/rclone/rclone.conf`.
-    private var configURL: URL {
+    /// Older builds wrote the access token here. New runs delete the file and do not recreate it.
+    private var legacyConfigURL: URL {
         supportDirectory.appendingPathComponent("rclone.conf")
     }
 
@@ -82,6 +81,7 @@ actor RcloneEngine {
         let pass = Self.randomPassword()
         rcPort = port
         rcPass = pass
+        let configDirectory = try makeEphemeralConfigDirectory()
 
         let process = Process()
         process.executableURL = binaryURL
@@ -89,11 +89,11 @@ actor RcloneEngine {
         var environment = ProcessInfo.processInfo.environment
         environment["RCLONE_RC_USER"] = rcUser
         environment["RCLONE_RC_PASS"] = pass
-        environment["RCLONE_CONFIG"] = configURL.path
+        environment["RCLONE_CONFIG"] = configDirectory.appendingPathComponent("rclone.conf").path
         process.environment = environment
         process.arguments = [
             "rcd",
-            "--config=\(configURL.path)",
+            "--config=\(configDirectory.appendingPathComponent("rclone.conf").path)",
             "--rc-addr=127.0.0.1:\(port)",
             "--rc-web-gui=false",
             "--transfers=8",
@@ -154,6 +154,7 @@ actor RcloneEngine {
         started = false
         try? logHandle?.close()
         logHandle = nil
+        discardConfigFiles()
     }
 
     /// Synchronous path for app termination — safe to call without awaiting the actor.
@@ -162,31 +163,18 @@ actor RcloneEngine {
     }
 
     func configureDrive(tokenJSON: String) async throws {
+        driveToken = tokenJSON
         try await ensureRunning()
-        _ = try await rc("config/create", body: [
-            "name": Self.remoteName,
-            "type": "drive",
-            "parameters": [
-                "token": tokenJSON,
-                "scope": "drive.readonly",
-                "client_id": AppConfig.googleClientID,
-                "client_secret": AppConfig.googleClientSecret,
-            ],
-            "opt": [
-                "nonInteractive": true,
-                "obscure": true,
-            ],
-        ])
-        Self.restrictToOwner(configURL)
     }
 
-    /// Remove the Drive remote, stop the engine, and delete the app-private config.
+    /// Stop the engine and delete any config file that could hold a token.
     func clearPersistedCredentials() async {
+        driveToken = nil
         if started {
-            _ = try? await rc("config/delete", body: ["name": Self.remoteName])
             stop()
+        } else {
+            discardConfigFiles()
         }
-        try? FileManager.default.removeItem(at: configURL)
     }
 
     /// Copy a Drive file or folder (by ID) into destination/<name>.
@@ -244,9 +232,9 @@ actor RcloneEngine {
         let response: [String: Any]
         if isFolder {
             try FileManager.default.createDirectory(at: dst, withIntermediateDirectories: true)
-            let srcFs = isSharedDriveRoot
-                ? "\(Self.remoteName),team_drive=\(id):"
-                : "\(Self.remoteName),root_folder_id=\(id):"
+            let srcFs = try driveRemote(
+                extra: isSharedDriveRoot ? "team_drive=\(id)" : "root_folder_id=\(id)"
+            )
             response = try await rc("sync/copy", body: [
                 "srcFs": srcFs,
                 "dstFs": dst.path,
@@ -256,7 +244,7 @@ actor RcloneEngine {
             // Google Drive paths are not unique, so files must be copied by ID.
             response = try await rc("backend/command", body: [
                 "command": "copyid",
-                "fs": "\(Self.remoteName):",
+                "fs": try driveRemote(),
                 "arg": [id, dst.path],
                 "_async": true,
             ])
@@ -267,7 +255,7 @@ actor RcloneEngine {
         }
         // backend/command may return the error inline without a job id
         if let err = response["error"] as? String, !err.isEmpty {
-            throw AppError.rcloneFailed(err)
+            throw AppError.rcloneFailed(RcloneSecretText.scrubbingCredentials(err))
         }
         throw AppError.rcloneFailed("Couldn’t start copy.")
     }
@@ -296,7 +284,7 @@ actor RcloneEngine {
     func jobStatus(_ jobID: String) async throws -> (finished: Bool, error: String?) {
         let json = try await rc("job/status", body: ["jobid": Int(jobID) ?? jobID])
         let finished = (json["finished"] as? Bool) ?? false
-        let error = json["error"] as? String
+        let error = (json["error"] as? String).map(RcloneSecretText.scrubbingCredentials)
         let succeeded = (json["success"] as? Bool) ?? false
         if finished, !succeeded, error?.isEmpty != false {
             return (true, "The download engine stopped without completing the transfer.")
@@ -334,6 +322,36 @@ actor RcloneEngine {
         return fileName
     }
 
+    private func driveRemote(extra: String? = nil) throws -> String {
+        guard let driveToken, !driveToken.isEmpty else {
+            throw AppError.rcloneFailed("Drive access expired. Sign in again.")
+        }
+        return RcloneDriveRemote.fsString(tokenJSON: driveToken, extra: extra)
+    }
+
+    private func makeEphemeralConfigDirectory() throws -> URL {
+        discardConfigFiles()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("driveflow-rclone-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let config = directory.appendingPathComponent("rclone.conf")
+        FileManager.default.createFile(
+            atPath: config.path,
+            contents: Data(),
+            attributes: [.posixPermissions: 0o600]
+        )
+        ephemeralConfigDirectory = directory
+        return directory
+    }
+
+    private func discardConfigFiles() {
+        try? FileManager.default.removeItem(at: legacyConfigURL)
+        if let ephemeralConfigDirectory {
+            try? FileManager.default.removeItem(at: ephemeralConfigDirectory)
+        }
+        ephemeralConfigDirectory = nil
+    }
+
     private func ping() async -> Bool {
         (try? await rc("rc/noop", body: [:])) != nil
     }
@@ -351,7 +369,9 @@ actor RcloneEngine {
             throw AppError.rcloneFailed("No response from engine.")
         }
         guard (200..<300).contains(http.statusCode) else {
-            let message = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            let message = RcloneSecretText.scrubbingCredentials(
+                String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            )
             throw AppError.rcloneFailed(message)
         }
         if data.isEmpty { return [:] }
@@ -429,5 +449,40 @@ actor RcloneEngine {
         if let n = value as? Double { return n }
         if let n = value as? NSNumber { return n.doubleValue }
         return 0
+    }
+}
+
+/// rclone 1.71 keeps a quoted connection-string value intact, including commas and colons.
+enum RcloneDriveRemote {
+    static func fsString(tokenJSON: String, extra: String?) -> String {
+        let quotedToken = "'" + tokenJSON.replacingOccurrences(of: "'", with: "''") + "'"
+        var parameters = [
+            "scope=drive.readonly",
+            "token=\(quotedToken)",
+        ]
+        if let extra, !extra.isEmpty {
+            parameters.append(extra)
+        }
+        return ":drive,\(parameters.joined(separator: ",")):"
+    }
+}
+
+enum RcloneSecretText {
+    static func scrubbingCredentials(_ text: String) -> String {
+        var result = text
+        let patterns = [
+            "\"access_token\"\\s*:\\s*\"[^\"\\\\]*\"",
+            "ya29\\.[A-Za-z0-9._\\-]+",
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(result.startIndex..., in: result)
+            result = regex.stringByReplacingMatches(
+                in: result,
+                range: range,
+                withTemplate: "redacted"
+            )
+        }
+        return result
     }
 }
