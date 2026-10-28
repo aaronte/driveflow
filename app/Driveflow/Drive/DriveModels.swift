@@ -13,7 +13,7 @@ struct DriveItem: Identifiable, Hashable, Sendable {
     let shortcutTargetMimeType: String?
     let isFolder: Bool
     let isGoogleNative: Bool
-    /// True for shared-drive roots from `drives.list` (ID is a team drive, not a folder).
+    /// Team-drive root. The id is a drive, not a folder. Saved download jobs can still set this.
     let isSharedDriveRoot: Bool
 
     /// ID rclone should fetch (shortcut target when present).

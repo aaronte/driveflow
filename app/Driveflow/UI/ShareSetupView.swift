@@ -117,40 +117,45 @@ struct ShareSetupView: View {
 
     @ViewBuilder
     private var linkStatus: some View {
-        let onboarding = driveAccess.onboarding
-        if onboarding.isWaiting {
+        switch driveAccess.onboarding.phase {
+        case .waiting:
             Text("Waiting for access to your folder")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(DriveflowTheme.inkMuted)
-        } else if onboarding.rejection == .notAFolder {
+        case .failed:
             statusLine(
                 systemImage: "exclamationmark.circle.fill",
                 text: "That link isn’t a folder. Paste the folder’s link instead.",
                 color: DriveflowTheme.caution
             )
-        } else {
-            switch onboarding.status {
-            case .empty:
-                EmptyView()
-            case .recognized:
-                statusLine(
-                    systemImage: "checkmark.circle.fill",
-                    text: "Folder link recognized",
-                    color: DriveflowTheme.accent
-                )
-            case .fileLink:
-                statusLine(
-                    systemImage: "exclamationmark.circle.fill",
-                    text: "That looks like a file link. Paste the folder’s link instead.",
-                    color: DriveflowTheme.caution
-                )
-            case .unrecognized:
-                statusLine(
-                    systemImage: "exclamationmark.circle.fill",
-                    text: "Paste a Google Drive folder link, like https://drive.google.com/drive/folders/…",
-                    color: DriveflowTheme.caution
-                )
-            }
+        case .idle, .linkParsed, .cancelled, .bound:
+            linkParseStatus
+        }
+    }
+
+    @ViewBuilder
+    private var linkParseStatus: some View {
+        switch driveAccess.onboarding.status {
+        case .empty:
+            EmptyView()
+        case .recognized:
+            statusLine(
+                systemImage: "checkmark.circle.fill",
+                text: "Folder link recognized",
+                color: DriveflowTheme.accent
+            )
+        case .fileLink:
+            statusLine(
+                systemImage: "exclamationmark.circle.fill",
+                text: "That looks like a file link. Paste the folder’s link instead.",
+                color: DriveflowTheme.caution
+            )
+        case .unrecognized:
+            statusLine(
+                systemImage: "exclamationmark.circle.fill",
+                text: "Paste a Google Drive folder link, like https://drive.google.com/drive/folders/…",
+                color: DriveflowTheme.caution
+            )
         }
     }
 
@@ -166,16 +171,20 @@ struct ShareSetupView: View {
     }
 
     private var linkBorder: Color {
-        let onboarding = driveAccess.onboarding
-        if onboarding.isWaiting { return DriveflowTheme.stone }
-        if onboarding.rejection == .notAFolder { return DriveflowTheme.caution.opacity(0.7) }
-        switch onboarding.status {
-        case .recognized:
-            return DriveflowTheme.accent.opacity(0.65)
-        case .fileLink, .unrecognized:
-            return DriveflowTheme.caution.opacity(0.7)
-        case .empty:
+        switch driveAccess.onboarding.phase {
+        case .waiting:
             return DriveflowTheme.stone
+        case .failed:
+            return DriveflowTheme.caution.opacity(0.7)
+        case .idle, .linkParsed, .cancelled, .bound:
+            switch driveAccess.onboarding.status {
+            case .recognized:
+                return DriveflowTheme.accent.opacity(0.65)
+            case .fileLink, .unrecognized:
+                return DriveflowTheme.caution.opacity(0.7)
+            case .empty:
+                return DriveflowTheme.stone
+            }
         }
     }
 
@@ -279,7 +288,12 @@ struct ShareSetupView: View {
     }
 
     private var canOpenSharing: Bool {
-        driveAccess.onboarding.recognizedFolderID != nil && !driveAccess.onboarding.isWaiting
+        switch driveAccess.onboarding.phase {
+        case .linkParsed, .failed, .cancelled, .bound:
+            return true
+        case .idle, .waiting:
+            return false
+        }
     }
 
     private var waitingPanel: some View {
