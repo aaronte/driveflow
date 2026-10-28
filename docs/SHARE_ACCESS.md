@@ -13,11 +13,8 @@ Driveflow no longer browses with the user’s `drive.readonly` OAuth token. The 
 1. Enable **Google Drive API**.
 2. Create a **service account** (IAM → Service accounts). Example email:
    `lic-xxxxx@driveflow-503421.iam.gserviceaccount.com`.
-3. For local/dev only: create a JSON key and store it on the Mac under
-   `~/Library/Application Support/Driveflow/service-account.json` (mode `600`)
-   or point `DRIVEFLOW_SA_KEY_PATH` at it.
-4. Do **not** enable domain-wide delegation for this flow.
-5. Do **not** put the JSON key in the app bundle, git, or rclone config.
+3. Do **not** enable domain-wide delegation for this flow.
+4. Do **not** put a JSON key in the app bundle, git, or rclone config. The Mac app never reads one.
 
 When a user shares a folder with the SA as Viewer (Notify unchecked), `files.get`
 on that folder ID starts succeeding for the SA token. Shared Drives require adding
@@ -29,22 +26,22 @@ sharing with external addresses — that’s an admin setting, not an app bug.
 | Identity | Scope / credential | Used for |
 | --- | --- | --- |
 | Buyer Google account | `openid email` (Desktop OAuth + PKCE) | License check (`POST {email}`), mint `Authorization`, UI “signed in as” |
-| Service account | `drive.readonly` via mint API or dev 2LO JWT | Drive `files.get` / list + rclone download |
+| Service account | short-lived token from the mint API | Drive `files.get` / list + rclone download |
 
 The Mac app may hold:
 
-- The buyer’s Google **ID token** (short-lived, in the same session store as the sign-in tokens)
-- Public **share email** (display / copy)
-- Short-lived **SA access token** + expiry in the existing credential store
+- The buyer’s Google **ID token** (short-lived, in the login Keychain)
+- Public **share email** (display / copy, also in the Keychain)
+- Short-lived **SA access token** + expiry in the Keychain
 
-It must never ship or persist the SA private key in production builds.
+It does not load or store a service-account private key.
 
-### Mint resolution order
+### Mint resolution
 
-1. **Mint HTTP API.** Release builds default to `https://usedriveflow.app/api/drive/session`. Debug builds leave this unset. `DRIVEFLOW_SHARE_MINT_URL` overrides either. HTTP errors do **not** fall through to a local key.
-2. **Extended license check** — same share fields on `DRIVEFLOW_LICENSE_CHECK_URL` when `allowed: true` (dev / transitional). This path is separate from `ShareMintClient.mint`.
-3. **Local SA JSON** — Application Support / `DRIVEFLOW_SA_KEY_PATH` (dev). Used only when the mint URL is unset.
-4. **Env token** — `DRIVEFLOW_SHARE_EMAIL` + `DRIVEFLOW_SHARE_ACCESS_TOKEN` (+ optional `DRIVEFLOW_SHARE_TOKEN_EXPIRES_IN`). Used only when the mint URL is unset.
+The app mints only through the server.
+
+1. **Mint HTTP API.** Every build uses `https://usedriveflow.app/api/drive/session`. `DRIVEFLOW_SHARE_MINT_URL` overrides that URL when it is an `http` or `https` URL.
+2. **Extended license check.** The license response may include the same share fields when `allowed: true`. That path is separate from `ShareMintClient.mint` and still comes from the server.
 
 ### Mint API contract
 
@@ -106,6 +103,7 @@ License email is always the **buyer** Google email — never the share-target in
 3. After either of those actions (in either order with the paste), the app polls `files.get` every few seconds with the SA token:
    `GET https://www.googleapis.com/drive/v3/files/<id>?fields=id,name,mimeType,shortcutDetails(targetId,targetMimeType)&supportsAllDrives=true`
    - `404` / `403` → keep waiting
+   - `401` → mint once; if Drive rejects that token too, return to sign-in
    - folder → bind the pasted ID and enter the browser
    - shortcut to a folder → bind the **target** folder ID (children are listed on the target, not the shortcut)
    - any other readable file → stop and say it isn’t a folder
@@ -128,7 +126,7 @@ bound folders. Search is limited to those IDs and their direct children. Caveats
 
 ## Local test plan
 
-1. Create/use one SA; place its JSON key in Application Support (gitignored). Do not commit it.
+1. Configure the share-mint server for the service account. Do not put a JSON key in the app.
 2. Configure Desktop OAuth client for sign-in (`openid email`).
 3. Run the app → Sign in with Google.
 4. On **Add a folder**, paste `https://drive.google.com/drive/folders/<id>`. The status reads **Folder link recognized**. A file link or random text shows an error. The folder name is not shown.
@@ -138,11 +136,9 @@ bound folders. Search is limited to those IDs and their direct children. Caveats
 8. When `files.get` succeeds, the app binds that ID and opens the browser. The sidebar lists the folder under **Shared with Driveflow** with its name and item count.
 9. **+ Add folder** returns to step 4. **Cancel** on the waiting panel stays on the form and does not bind.
 10. Download via rclone; confirm the transfer uses the SA token.
-11. Release builds mint at `https://usedriveflow.app/api/drive/session` (`DRIVEFLOW_SHARE_MINT_URL` overrides). The call is `POST` with `Authorization: Bearer <id_token>` and body `{ "idToken": "<id_token>" }`. The response is `{ shareEmail, accessToken, expiresIn, expiresAt }` and the app prefers `expiresAt`. 401 returns to sign-in, 402 shows the unpaid state, 429 backs off, 500 shows a mint failure.
+11. The app mints at `https://usedriveflow.app/api/drive/session` (`DRIVEFLOW_SHARE_MINT_URL` overrides). The call is `POST` with `Authorization: Bearer <id_token>` and body `{ "idToken": "<id_token>" }`. The response is `{ shareEmail, accessToken, expiresIn, expiresAt }` and the app prefers `expiresAt`. 401 returns to sign-in, 402 shows the unpaid state, 429 backs off, 500 shows a mint failure. Other HTTP errors show the status code and do not include the response body.
 
 Unit tests (no network): folder-link parsing, `files.get` probe → bind / keep waiting / not a folder, and the mint request shape. Run `xcodebuild test` as in [CONTRIBUTING.md](../CONTRIBUTING.md).
-
-Helper for env-token testing when the mint URL is unset: `./scripts/mint-sa-token.py --print-exports`.
 
 ## Out of scope
 

@@ -1,22 +1,18 @@
 import Foundation
 
-/// Result of `files.get` on the folder ID the buyer pasted.
 enum FolderProbe: Equatable {
-    /// 403/404 or a transient failure — the share has not landed yet.
     case notReadableYet
-    /// Drive returned the item, and it is not a folder.
     case notAFolder
-    /// SA token was rejected; refresh once and probe again.
     case unauthorized
-    /// Readable folder. `bindID` is the pasted ID, or a shortcut’s target folder.
-    case readable(bindID: String, name: String)
+    /// `bindID` may be the shortcut target rather than the pasted folder.
+    case readable(bindID: FolderID, name: String)
 }
 
 enum ShareBindAction: Equatable {
     case idle
     case pollAgain
     case refreshToken
-    case bind(folderID: String)
+    case bind(folderID: FolderID, name: String)
     case showNotAFolder
 }
 
@@ -24,104 +20,127 @@ enum ShareLinkRejection: Equatable {
     case notAFolder
 }
 
-/// Paste → share → poll decision, with no network or pasteboard side effects.
+/// One files.get 401 refreshes the service-account token. A second 401 in that
+/// streak ends the session instead of minting again. A later 404 clears it.
+struct UnauthorizedRetry: Equatable {
+    private(set) var refreshedDuringStreak = false
+
+    var shouldRefresh: Bool { !refreshedDuringStreak }
+
+    enum FollowUp: Equatable {
+        case refresh
+        case sessionExpired
+    }
+
+    var followUp: FollowUp {
+        shouldRefresh ? .refresh : .sessionExpired
+    }
+
+    mutating func markRefreshed() {
+        refreshedDuringStreak = true
+    }
+
+    mutating func clear() {
+        refreshedDuringStreak = false
+    }
+}
+
 struct ShareOnboarding: Equatable {
     private(set) var linkText = ""
     private(set) var status: DriveFolderLink.Status = .empty
     private(set) var didCopy = false
-    private(set) var didOpenSharing = false
-    private(set) var isWaiting = false
-    private(set) var boundIDs: Set<String> = []
-    private(set) var boundNames: [String: String] = [:]
-    private(set) var rejection: ShareLinkRejection?
+    private(set) var shareArmed = false
+    private(set) var phase: Phase = .idle
 
-    var recognizedFolderID: String? {
+    enum Phase: Equatable {
+        case idle
+        case linkParsed(FolderID)
+        case waiting(FolderID)
+        case failed(FolderID)
+        case cancelled(FolderID)
+        case bound(FolderID)
+    }
+
+    var isWaiting: Bool {
+        if case .waiting = phase { return true }
+        return false
+    }
+
+    var rejection: ShareLinkRejection? {
+        if case .failed = phase { return .notAFolder }
+        return nil
+    }
+
+    var recognizedFolderID: FolderID? {
         if case .recognized(let folderID) = status { return folderID }
         return nil
     }
 
-    /// Folder currently being polled. Nil unless a link is recognized and waiting.
-    var pollTargetID: String? {
-        guard isWaiting else { return nil }
-        return recognizedFolderID
+    var pollTargetID: FolderID? {
+        if case .waiting(let folderID) = phase { return folderID }
+        return nil
     }
 
     mutating func setLink(_ raw: String) {
         linkText = raw
         status = DriveFolderLink.interpret(raw)
-        rejection = nil
-        guard recognizedFolderID != nil else {
-            isWaiting = false
-            return
-        }
-        if didCopy || didOpenSharing {
-            isWaiting = true
+        switch status {
+        case .recognized(let folderID):
+            phase = shareArmed ? .waiting(folderID) : .linkParsed(folderID)
+        case .empty, .fileLink, .unrecognized:
+            phase = .idle
         }
     }
 
     mutating func copyTapped() {
         didCopy = true
-        if recognizedFolderID != nil {
-            isWaiting = true
+        shareArmed = true
+        if case .recognized(let folderID) = status {
+            phase = .waiting(folderID)
         }
     }
 
     mutating func openSharingTapped() {
-        didOpenSharing = true
-        if recognizedFolderID != nil {
-            isWaiting = true
+        shareArmed = true
+        if case .recognized(let folderID) = status {
+            phase = .waiting(folderID)
         }
     }
 
     mutating func cancelWaiting() {
-        isWaiting = false
+        if case .waiting(let folderID) = phase {
+            phase = .cancelled(folderID)
+        }
     }
 
     mutating func resetForNewFolder() {
-        linkText = ""
-        status = .empty
-        didCopy = false
-        didOpenSharing = false
-        isWaiting = false
-        rejection = nil
+        self = ShareOnboarding()
     }
 
     mutating func apply(probe: FolderProbe) -> ShareBindAction {
-        guard isWaiting, recognizedFolderID != nil else { return .idle }
+        guard case .waiting(let pastedID) = phase else { return .idle }
         switch probe {
         case .notReadableYet:
             return .pollAgain
         case .unauthorized:
             return .refreshToken
         case .notAFolder:
-            isWaiting = false
-            rejection = .notAFolder
+            phase = .failed(pastedID)
             return .showNotAFolder
         case .readable(let bindID, let name):
-            guard DriveFolderLink.isFolderID(bindID) else {
-                isWaiting = false
-                rejection = .notAFolder
-                return .showNotAFolder
-            }
-            boundIDs.insert(bindID)
-            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                boundNames[bindID] = trimmed
-            }
-            isWaiting = false
-            return .bind(folderID: bindID)
+            phase = .bound(bindID)
+            return .bind(folderID: bindID, name: name)
         }
     }
 }
 
-/// Maps a Drive `files.get` response onto a probe. Pure — the session performs the request.
 enum DriveFolderAccess {
     private static let folderMIME = "application/vnd.google-apps.folder"
 
     static func interpret(
         statusCode: Int,
         body: [String: Any]?,
-        pastedID: String
+        pastedID: FolderID
     ) -> FolderProbe {
         switch statusCode {
         case 401:
@@ -136,19 +155,18 @@ enum DriveFolderAccess {
         }
     }
 
-    private static func interpretSuccess(_ body: [String: Any], pastedID: String) -> FolderProbe {
+    private static func interpretSuccess(_ body: [String: Any], pastedID: FolderID) -> FolderProbe {
         let mime = body["mimeType"] as? String ?? ""
         let name = (body["name"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if mime == folderMIME {
-            guard DriveFolderLink.isFolderID(pastedID) else { return .notAFolder }
             return .readable(bindID: pastedID, name: name)
         }
         let shortcut = body["shortcutDetails"] as? [String: Any]
         let targetMIME = shortcut?["targetMimeType"] as? String
         let targetID = shortcut?["targetId"] as? String
-        if targetMIME == folderMIME, let targetID, DriveFolderLink.isFolderID(targetID) {
-            return .readable(bindID: targetID, name: name)
+        if targetMIME == folderMIME, let targetID, let folderID = FolderID(targetID) {
+            return .readable(bindID: folderID, name: name)
         }
         return .notAFolder
     }

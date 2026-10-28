@@ -174,9 +174,9 @@ struct BrowserView: View {
 
     private func signOut() {
         Task {
-            await downloads.clearEngineCredentials()
-            browser.resetForSignOut()
             driveAccess.clear()
+            browser.resetForSignOut()
+            await downloads.clearEngineCredentials()
             auth.signOut()
         }
     }

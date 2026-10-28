@@ -56,6 +56,7 @@ final class DownloadController: ObservableObject {
         } catch let error as AppError {
             lastError = error
             isEngineReady = false
+            recordAuthFailure(error)
         } catch {
             lastError = .rcloneFailed(error.localizedDescription)
             isEngineReady = false
@@ -76,6 +77,7 @@ final class DownloadController: ObservableObject {
             }
         } catch let error as AppError {
             lastError = error
+            recordAuthFailure(error)
         } catch {
             lastError = .unknown(error.localizedDescription)
         }
@@ -133,6 +135,7 @@ final class DownloadController: ObservableObject {
                 $0.rcloneJobIDs = []
             }
             lastError = error
+            recordAuthFailure(error)
             await startNextQueued()
         } catch {
             await failClosedStart(jobID: jobID, startedIDs: startedRcloneJobIDs)
@@ -211,6 +214,12 @@ final class DownloadController: ObservableObject {
             await engine.stopJob(rcloneJobID)
         }
         _ = detachActiveTransfer(ifJobID: jobID)
+    }
+
+    private func recordAuthFailure(_ error: AppError) {
+        if error.requiresSignInAgain {
+            driveAccess.noteUnrecoverableDriveAuth()
+        }
     }
 
     private func injectToken() async throws {

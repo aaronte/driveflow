@@ -1,15 +1,11 @@
 import Foundation
 
-/// One Drive folder the buyer pasted and that the service account can read.
 struct BoundFolderRecord: Codable, Equatable, Sendable {
-    var id: String
+    var id: FolderID
     var name: String?
 }
 
-/// Persists Drive folder IDs bound to a purchaser email, in insertion order.
-///
-/// Used when a single service account is shared across licenses so the browser
-/// lists only folders this buyer added — not every folder shared with the SA.
+/// Per buyer, so a shared service account cannot list another buyer's folders.
 enum BoundFolderStore {
     private static var directory: URL {
         let directory = FileManager.default.urls(
@@ -21,15 +17,18 @@ enum BoundFolderStore {
     }
 
     private static func fileURL(forBuyerEmail email: String) -> URL {
-        let safe = email
+        let normalized = email
             .lowercased()
             .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "@", with: "_at_")
-            .replacingOccurrences(of: "/", with: "_")
-        return directory.appendingPathComponent("bound-folders-\(safe).json")
+        // Percent-encoding is injective. Replacing "@" with "_at_" collides
+        // `a@b_at_c.com` with `a_at_b@c.com` and mixes two buyers' folders.
+        let encoded = normalized.addingPercentEncoding(
+            withAllowedCharacters: .alphanumerics
+        ) ?? "unknown"
+        return directory.appendingPathComponent("bound-folders-\(encoded).json")
     }
 
-    static func load(buyerEmail: String) -> Set<String> {
+    static func load(buyerEmail: String) -> Set<FolderID> {
         Set(loadOrdered(buyerEmail: buyerEmail).map(\.id))
     }
 
@@ -39,13 +38,29 @@ enum BoundFolderStore {
         return decode(data)
     }
 
-    static func save(_ ids: Set<String>, buyerEmail: String) {
-        let existing = loadOrdered(buyerEmail: buyerEmail)
-        var ordered = existing.filter { ids.contains($0.id) }
-        for id in ids.sorted() where !ordered.contains(where: { $0.id == id }) {
-            ordered.append(BoundFolderRecord(id: id, name: nil))
+    static func bind(_ record: BoundFolderRecord, buyerEmail: String) {
+        var records = loadOrdered(buyerEmail: buyerEmail)
+        if let index = records.firstIndex(where: { $0.id == record.id }) {
+            let trimmed = record.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let trimmed, !trimmed.isEmpty, records[index].name != trimmed else { return }
+            records[index].name = trimmed
+        } else {
+            let trimmed = record.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = (trimmed?.isEmpty == false) ? trimmed : nil
+            records.append(BoundFolderRecord(id: record.id, name: name))
         }
-        save(ordered, buyerEmail: buyerEmail)
+        save(records, buyerEmail: buyerEmail)
+    }
+
+    static func updateName(id: FolderID, name: String, buyerEmail: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var records = loadOrdered(buyerEmail: buyerEmail)
+        guard let index = records.firstIndex(where: { $0.id == id }), records[index].name != trimmed else {
+            return
+        }
+        records[index].name = trimmed
+        save(records, buyerEmail: buyerEmail)
     }
 
     static func save(_ records: [BoundFolderRecord], buyerEmail: String) {
@@ -58,15 +73,11 @@ enum BoundFolderStore {
         )
     }
 
-    /// Accepts `[{id,name}]` and the older `[id]` array.
     static func decode(_ data: Data) -> [BoundFolderRecord] {
         guard let json = try? JSONSerialization.jsonObject(with: data) else { return [] }
-        if let ids = json as? [String] {
-            return ids.filter { !$0.isEmpty }.map { BoundFolderRecord(id: $0, name: nil) }
-        }
         if let records = json as? [[String: Any]] {
             return records.compactMap { dict in
-                guard let id = dict["id"] as? String, !id.isEmpty else { return nil }
+                guard let raw = dict["id"] as? String, let id = FolderID(raw) else { return nil }
                 return BoundFolderRecord(id: id, name: dict["name"] as? String)
             }
         }

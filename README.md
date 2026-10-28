@@ -45,29 +45,9 @@ and paste your `client_id` and `client_secret`, or set `DRIVEFLOW_GOOGLE_CLIENT_
 
 You can also put the same JSON at `~/Library/Application Support/Driveflow/oauth-client.json`.
 
-### 3. Service account (Drive access)
+### 3. Drive access
 
-1. Enable the **Google Drive API** on the GCP project.
-2. Create a service account (IAM → Service accounts). Note its email — that is the share target.
-3. Create a JSON key **for local/dev only**. Store it outside git, e.g.:
-
-```bash
-mkdir -p "$HOME/Library/Application Support/Driveflow"
-cp ~/Downloads/your-sa.json \
-  "$HOME/Library/Application Support/Driveflow/service-account.json"
-chmod 600 "$HOME/Library/Application Support/Driveflow/service-account.json"
-```
-
-Or set `DRIVEFLOW_SA_KEY_PATH` to that file. **Never commit SA keys or ship them in the Mac app.**
-
-Optional: mint a token for env-based testing:
-
-```bash
-pip install cryptography
-eval "$(./scripts/mint-sa-token.py --print-exports)"
-```
-
-Release builds mint short-lived tokens at `https://usedriveflow.app/api/drive/session` (`DRIVEFLOW_SHARE_MINT_URL` overrides): `POST` with `Authorization: Bearer <Google ID token>` and body `{ "idToken" }`, response `{ shareEmail, accessToken, expiresIn, expiresAt }`. See [docs/SHARE_ACCESS.md](docs/SHARE_ACCESS.md).
+The app mints a short-lived Drive token at `https://usedriveflow.app/api/drive/session` (`DRIVEFLOW_SHARE_MINT_URL` overrides). The call is `POST` with `Authorization: Bearer <Google ID token>` and body `{ "idToken" }`. The response is `{ shareEmail, accessToken, expiresIn, expiresAt }`. The Mac app does not load a service-account JSON key. See [docs/SHARE_ACCESS.md](docs/SHARE_ACCESS.md).
 
 ### 4. Generate the Xcode project
 

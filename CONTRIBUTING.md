@@ -16,12 +16,6 @@ cp app/Driveflow/Resources/oauth-client.example.json \
    app/Driveflow/Resources/oauth-client.json
 # add your Desktop client_id and client_secret
 
-# Local/dev Drive access — never commit this file
-mkdir -p "$HOME/Library/Application Support/Driveflow"
-cp /path/to/your-sa-key.json \
-  "$HOME/Library/Application Support/Driveflow/service-account.json"
-chmod 600 "$HOME/Library/Application Support/Driveflow/service-account.json"
-
 brew install xcodegen
 cd app && xcodegen generate && cd ..
 open app/Driveflow.xcodeproj

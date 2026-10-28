@@ -14,40 +14,20 @@ actor DriveClient {
         folderCache.removeAll()
     }
 
-    /// - Parameter boundFolderIDs: When non-nil and non-empty, Shared-with-me **root**
-    ///   listings are filtered to these IDs (per-license isolation on a shared SA).
-    ///   Pass `nil` to skip filtering (onboarding poll).
     func list(
         parentID: String?,
-        root: DriveRoot,
-        pageToken: String? = nil,
-        boundFolderIDs: Set<String>? = []
+        pageToken: String? = nil
     ) async throws -> (items: [DriveItem], nextPageToken: String?) {
-        let cacheKey = "\(root.rawValue):\(parentID ?? "root"):\(pageToken ?? ""):\(boundCacheSuffix(boundFolderIDs))"
+        // A nil parent would list every item shared with the service account.
+        guard let parentID else {
+            return ([], nil)
+        }
+        let cacheKey = "\(parentID):\(pageToken ?? "")"
         if pageToken == nil, let cached = folderCache[cacheKey] {
             return (cached, nil)
         }
 
-        var query: String
-        switch root {
-        case .myDrive:
-            let parent = parentID ?? "root"
-            query = "'\(Self.escapeQuery(parent))' in parents and trashed = false"
-        case .sharedWithMe:
-            // Browse is rooted at a bound folder. Never list every item shared
-            // with the service account — that would show other buyers' folders.
-            guard let parentID else {
-                return ([], nil)
-            }
-            query = "'\(Self.escapeQuery(parentID))' in parents and trashed = false"
-        case .sharedDrives:
-            // Shared drives listing uses a different endpoint when parent is nil.
-            if parentID == nil {
-                return try await listSharedDrives()
-            }
-            query = "'\(Self.escapeQuery(parentID!))' in parents and trashed = false"
-        }
-
+        let query = "'\(Self.escapeQuery(parentID))' in parents and trashed = false"
         var components = URLComponents(url: AppConfig.driveAPIBase.appendingPathComponent("files"), resolvingAgainstBaseURL: false)!
         var items: [URLQueryItem] = [
             URLQueryItem(name: "q", value: query),
@@ -56,10 +36,8 @@ actor DriveClient {
             URLQueryItem(name: "orderBy", value: "folder,name_natural"),
             URLQueryItem(name: "supportsAllDrives", value: "true"),
             URLQueryItem(name: "includeItemsFromAllDrives", value: "true"),
+            URLQueryItem(name: "corpora", value: "allDrives"),
         ]
-        if root == .sharedWithMe {
-            items.append(URLQueryItem(name: "corpora", value: "allDrives"))
-        }
         if let pageToken {
             items.append(URLQueryItem(name: "pageToken", value: pageToken))
         }
@@ -75,7 +53,6 @@ actor DriveClient {
         return (files, next)
     }
 
-    /// Resolves whether a Drive ID is a folder (follows shortcuts).
     func isFolder(id: String) async throws -> Bool {
         var components = URLComponents(
             url: AppConfig.driveAPIBase
@@ -97,7 +74,6 @@ actor DriveClient {
         return targetMime == "application/vnd.google-apps.folder"
     }
 
-    /// Name plus child count for a folder the service account can already read.
     func folderSummary(id: String) async throws -> BoundFolderSummary {
         var components = URLComponents(
             url: AppConfig.driveAPIBase
@@ -190,51 +166,31 @@ actor DriveClient {
         value.replacingOccurrences(of: "'", with: "\\'")
     }
 
-    private func boundCacheSuffix(_ bound: Set<String>?) -> String {
-        guard let bound else { return "unfiltered" }
-        if bound.isEmpty { return "empty" }
-        return bound.sorted().joined(separator: ",")
-    }
-
-    private func listSharedDrives() async throws -> (items: [DriveItem], nextPageToken: String?) {
-        var components = URLComponents(url: AppConfig.driveAPIBase.appendingPathComponent("drives"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [
-            URLQueryItem(name: "pageSize", value: "50"),
-            URLQueryItem(name: "fields", value: "nextPageToken,drives(id,name)"),
-        ]
-        let json = try await getJSON(url: components.url!)
-        let drives = (json["drives"] as? [[String: Any]] ?? []).map { dict in
-            DriveItem(
-                id: dict["id"] as? String ?? UUID().uuidString,
-                name: dict["name"] as? String ?? "Shared drive",
-                mimeType: "application/vnd.google-apps.folder",
-                size: nil,
-                modifiedTime: nil,
-                md5Checksum: nil,
-                parentIDs: [],
-                shortcutTargetId: nil,
-                shortcutTargetMimeType: nil,
-                isFolder: true,
-                isGoogleNative: false,
-                isSharedDriveRoot: true
-            )
-        }
-        return (drives, json["nextPageToken"] as? String)
-    }
-
     private func getJSON(url: URL) async throws -> [String: Any] {
-        let token = try await tokenProvider.validAccessToken()
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw AppError.network("No response from Drive.")
+        var refreshed = false
+        while true {
+            let token = try await tokenProvider.validAccessToken()
+            var request = URLRequest(url: url)
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw AppError.network("No response from Drive.")
+            }
+            if http.statusCode == 401 {
+                if refreshed {
+                    throw AppError.tokenExpired
+                }
+                refreshed = true
+                try await tokenProvider.refreshAfterUnauthorized()
+                continue
+            }
+            return try Self.decodeDriveJSON(data: data, statusCode: http.statusCode)
         }
-        if http.statusCode == 401 {
-            throw AppError.tokenExpired
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+    }
+
+    private static func decodeDriveJSON(data: Data, statusCode: Int) throws -> [String: Any] {
+        guard (200..<300).contains(statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? "HTTP \(statusCode)"
             throw AppError.driveAPI(body)
         }
         return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]

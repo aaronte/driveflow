@@ -13,7 +13,7 @@ struct DriveItem: Identifiable, Hashable, Sendable {
     let shortcutTargetMimeType: String?
     let isFolder: Bool
     let isGoogleNative: Bool
-    /// True for shared-drive roots from `drives.list` (ID is a team drive, not a folder).
+    /// Team-drive root. The id is a drive, not a folder. Saved download jobs can still set this.
     let isSharedDriveRoot: Bool
 
     /// ID rclone should fetch (shortcut target when present).
@@ -59,22 +59,6 @@ struct DriveItem: Identifiable, Hashable, Sendable {
 struct DriveBreadcrumb: Identifiable, Hashable, Sendable {
     let id: String
     let name: String
-}
-
-enum DriveRoot: String, CaseIterable, Identifiable {
-    case myDrive
-    case sharedWithMe
-    case sharedDrives
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .myDrive: return "My Drive"
-        case .sharedWithMe: return "Shared with me"
-        case .sharedDrives: return "Shared drives"
-        }
-    }
 }
 
 /// Virtual root above the folders a buyer has shared with Driveflow.
