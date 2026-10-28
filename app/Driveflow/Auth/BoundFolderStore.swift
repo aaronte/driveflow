@@ -1,15 +1,11 @@
 import Foundation
 
-/// One Drive folder the buyer pasted and that the service account can read.
 struct BoundFolderRecord: Codable, Equatable, Sendable {
     var id: String
     var name: String?
 }
 
-/// Persists Drive folder IDs bound to a purchaser email, in insertion order.
-///
-/// Used when a single service account is shared across licenses so the browser
-/// lists only folders this buyer added — not every folder shared with the SA.
+/// Per buyer, so a shared service account cannot list another buyer's folders.
 enum BoundFolderStore {
     private static var directory: URL {
         let directory = FileManager.default.urls(

@@ -1,9 +1,6 @@
 import Foundation
 
-/// Parses a Google Drive folder link the buyer pasted.
-///
-/// The app cannot read the folder name until the service account has access,
-/// so a recognized link is only an ID — not a title.
+/// A recognized link is only an ID. The folder name needs service-account access.
 enum DriveFolderLink {
     enum Status: Equatable {
         case empty
@@ -69,7 +66,6 @@ enum DriveFolderLink {
         return .unrecognized
     }
 
-    /// Folder the buyer should open to share with the service account.
     static func sharingURL(folderID: String) -> URL? {
         guard isFolderID(folderID) else { return nil }
         var components = URLComponents()

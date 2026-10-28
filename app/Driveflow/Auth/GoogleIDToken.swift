@@ -1,10 +1,6 @@
 import Foundation
 
-/// Reads the `exp` claim from a Google OpenID Connect ID token.
-///
-/// The app does not verify the signature — Google minted the token, and the
-/// share-mint server is what must verify it. Expiry here only decides when to
-/// refresh before calling that server.
+/// Expiry is read from the payload only. The mint server verifies the signature.
 enum GoogleIDToken {
     static func expiresAt(_ jwt: String) -> Date? {
         let parts = jwt.split(separator: ".")
@@ -23,7 +19,6 @@ enum GoogleIDToken {
         return nil
     }
 
-    /// True when the token has more than `leeway` seconds left.
     static func isFresh(_ jwt: String, now: Date = Date(), leeway: TimeInterval = 60) -> Bool {
         guard let exp = expiresAt(jwt) else { return false }
         return exp.timeIntervalSince(now) > leeway

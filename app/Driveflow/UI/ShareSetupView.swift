@@ -1,6 +1,5 @@
 import SwiftUI
 
-/// Paste a Drive folder link, then share that folder with the service account.
 struct ShareSetupView: View {
     @ObservedObject var auth: AuthSession
     @ObservedObject var driveAccess: DriveAccessSession
@@ -374,7 +373,6 @@ struct ShareSetupView: View {
     }
 }
 
-/// Small Google Drive mark for the “Open sharing in Drive” button.
 private struct DriveMark: View {
     var body: some View {
         Canvas { context, size in

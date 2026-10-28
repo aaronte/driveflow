@@ -14,9 +14,6 @@ actor DriveClient {
         folderCache.removeAll()
     }
 
-    /// - Parameter boundFolderIDs: When non-nil and non-empty, Shared-with-me **root**
-    ///   listings are filtered to these IDs (per-license isolation on a shared SA).
-    ///   Pass `nil` to skip filtering (onboarding poll).
     func list(
         parentID: String?,
         root: DriveRoot,
@@ -75,7 +72,6 @@ actor DriveClient {
         return (files, next)
     }
 
-    /// Resolves whether a Drive ID is a folder (follows shortcuts).
     func isFolder(id: String) async throws -> Bool {
         var components = URLComponents(
             url: AppConfig.driveAPIBase
@@ -97,7 +93,6 @@ actor DriveClient {
         return targetMime == "application/vnd.google-apps.folder"
     }
 
-    /// Name plus child count for a folder the service account can already read.
     func folderSummary(id: String) async throws -> BoundFolderSummary {
         var components = URLComponents(
             url: AppConfig.driveAPIBase

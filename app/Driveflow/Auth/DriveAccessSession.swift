@@ -1,11 +1,7 @@
 import Foundation
 import AppKit
 
-/// Drive identity for browse/download: a Google Cloud service account principal.
-///
-/// The Mac app never embeds a long-lived SA JSON key. It holds a short-lived
-/// access token (mint API, or local/dev SA key / env token) plus the public
-/// share email shown to the user.
+/// Short-lived service-account access token plus the public share email. No SA JSON key in the app.
 @MainActor
 final class DriveAccessSession: ObservableObject, AccessTokenProviding {
     @Published private(set) var shareEmail: String?
@@ -19,7 +15,6 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
     /// Set when the mint server requires a new Google sign-in (401) or a license (402).
     @Published private(set) var authenticationFailure: AppError?
 
-    /// Supplies the buyer’s Google ID token when the production mint URL is set.
     var idTokenProvider: (() async throws -> String)?
 
     private let accessAccount = "drive.sa.access"
@@ -190,8 +185,6 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         authenticationFailure = nil
     }
 
-    // MARK: - AccessTokenProviding
-
     func validAccessToken() async throws -> String {
         if let expiryString = try CredentialStore.get(account: expiryAccount),
            let expiry = TimeInterval(expiryString),
@@ -228,8 +221,6 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         let data = try JSONSerialization.data(withJSONObject: payload)
         return String(data: data, encoding: .utf8) ?? "{}"
     }
-
-    // MARK: - Private
 
     private func googleIDTokenForMint() async throws -> String? {
         if AppConfig.shareMintURL != nil {
@@ -318,7 +309,6 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         return action
     }
 
-    /// Returns false when waiting should stop.
     private func refreshTokenForPoll() async -> Bool {
         guard !didRefreshForPoll else { return true }
         didRefreshForPoll = true

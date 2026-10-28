@@ -1,14 +1,10 @@
 import Foundation
 
-/// Result of `files.get` on the folder ID the buyer pasted.
 enum FolderProbe: Equatable {
-    /// 403/404 or a transient failure — the share has not landed yet.
     case notReadableYet
-    /// Drive returned the item, and it is not a folder.
     case notAFolder
-    /// SA token was rejected; refresh once and probe again.
     case unauthorized
-    /// Readable folder. `bindID` is the pasted ID, or a shortcut’s target folder.
+    /// `bindID` may be the shortcut target rather than the pasted folder.
     case readable(bindID: String, name: String)
 }
 
@@ -24,7 +20,6 @@ enum ShareLinkRejection: Equatable {
     case notAFolder
 }
 
-/// Paste → share → poll decision, with no network or pasteboard side effects.
 struct ShareOnboarding: Equatable {
     private(set) var linkText = ""
     private(set) var status: DriveFolderLink.Status = .empty
@@ -40,7 +35,6 @@ struct ShareOnboarding: Equatable {
         return nil
     }
 
-    /// Folder currently being polled. Nil unless a link is recognized and waiting.
     var pollTargetID: String? {
         guard isWaiting else { return nil }
         return recognizedFolderID
@@ -114,7 +108,6 @@ struct ShareOnboarding: Equatable {
     }
 }
 
-/// Maps a Drive `files.get` response onto a probe. Pure — the session performs the request.
 enum DriveFolderAccess {
     private static let folderMIME = "application/vnd.google-apps.folder"
 

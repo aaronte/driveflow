@@ -105,7 +105,6 @@ enum AppError: LocalizedError, Identifiable {
         }
     }
 
-    /// Mint or identity failures that should return the user to Sign in with Google.
     var requiresSignInAgain: Bool {
         switch self {
         case .shareMintUnauthorized, .licenseRequired, .tokenExpired, .authRevoked:

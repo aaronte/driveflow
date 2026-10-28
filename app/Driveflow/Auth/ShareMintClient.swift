@@ -1,16 +1,6 @@
 import Foundation
 import Security
 
-/// Mints short-lived Drive access tokens for a service-account principal.
-///
-/// Resolution order inside `mint` (first success wins):
-/// 1. Mint HTTP API when a share mint URL is set (release default or
-///    `DRIVEFLOW_SHARE_MINT_URL`). The buyer’s Google ID token is sent as
-///    `Authorization: Bearer` and as JSON `idToken`. Failures do not fall through.
-/// 2. Local service-account JSON (dev only — never ship keys in the app bundle)
-/// 3. Explicit env token (`DRIVEFLOW_SHARE_ACCESS_TOKEN` + `DRIVEFLOW_SHARE_EMAIL`)
-///
-/// An extended license-check payload is applied by `DriveAccessSession`, not here.
 enum ShareMintClient {
     struct Session: Sendable {
         let shareEmail: String
@@ -25,12 +15,6 @@ enum ShareMintClient {
         let expiresAt: Double?
     }
 
-    /// Request a share session for the signed-in buyer.
-    ///
-    /// When a mint URL is set, `googleIDToken` is sent as `Authorization: Bearer`
-    /// and as JSON `{ "idToken" }` (no email). The mint server verifies that ID
-    /// token. Dev fallbacks (local SA JSON, env token) run only when the mint
-    /// URL is unset.
     static func mint(googleIDToken: String?) async throws -> Session {
         if AppConfig.shareMintURL != nil {
             let token = googleIDToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -41,6 +25,7 @@ enum ShareMintClient {
             }
             return try await mintFromAPI(idToken: token)
         }
+        // No mint URL: dev-only local key or env token. API failures never reach this.
         if let session = try await mintFromLocalServiceAccount() {
             return session
         }
@@ -79,8 +64,6 @@ enum ShareMintClient {
         }
     }
 
-    /// Delay before another attempt after HTTP 429. `Retry-After` wins (capped);
-    /// otherwise 1s, 2s, 4s, …
     static func retryDelaySeconds(attempt: Int, retryAfterHeader: String?, now: Date = Date()) -> TimeInterval {
         if let header = retryAfterHeader?.trimmingCharacters(in: .whitespacesAndNewlines),
            !header.isEmpty {
@@ -95,10 +78,6 @@ enum ShareMintClient {
         return min(exponential, 30)
     }
 
-    /// Production mint request.
-    ///
-    /// `Authorization: Bearer <id_token>` and body `{ "idToken": "<id_token>" }`.
-    /// `email` is omitted; the server accepts it only when it matches the token.
     static func mintRequest(url: URL, googleIDToken: String) -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -110,8 +89,6 @@ enum ShareMintClient {
         return request
     }
 
-    /// Decode `{ shareEmail, accessToken, expiresIn, expiresAt }`.
-    /// `expiresAt` is unix seconds and wins when both fields are present.
     static func session(fromMintData data: Data, now: Date = Date()) throws -> Session {
         let decoded: MintAPIResponse
         do {
@@ -135,7 +112,6 @@ enum ShareMintClient {
         return Session(shareEmail: shareEmail, accessToken: accessToken, expiresAt: expiresAt)
     }
 
-    /// Parse an optional share block from an extended license-check payload.
     static func session(fromLicenseJSON json: [String: Any]) -> Session? {
         guard let shareEmail = (json["shareEmail"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -155,8 +131,6 @@ enum ShareMintClient {
         }
         return Session(shareEmail: shareEmail, accessToken: accessToken, expiresAt: expiresAt)
     }
-
-    // MARK: - Mint API
 
     private static func mintFromAPI(idToken: String) async throws -> Session {
         guard let url = AppConfig.shareMintURL else {
@@ -203,8 +177,6 @@ enum ShareMintClient {
         return formatter.date(from: header)
     }
 
-    // MARK: - Env token (dev)
-
     private static func sessionFromEnvToken() -> Session? {
         let email = ProcessInfo.processInfo.environment["DRIVEFLOW_SHARE_EMAIL"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -220,8 +192,6 @@ enum ShareMintClient {
             expiresAt: Date().addingTimeInterval(expiresIn)
         )
     }
-
-    // MARK: - Local SA JWT (dev)
 
     private static func mintFromLocalServiceAccount() async throws -> Session? {
         guard let key = loadLocalServiceAccountKey() else { return nil }

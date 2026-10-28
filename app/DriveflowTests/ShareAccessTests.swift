@@ -5,8 +5,6 @@ final class ShareAccessTests: XCTestCase {
     private let folderID = "1AbC9xQ2kLm7RtVz-4hJpW0sYeN3uF"
     private let shortcutTargetID = "1ZzQ9xQ2kLm7RtVz-4hJpW0sYeN3uF"
 
-    // MARK: - Folder links
-
     func testParsesCommonFolderLinks() {
         let samples = [
             "https://drive.google.com/drive/folders/\(folderID)",
@@ -68,8 +66,6 @@ final class ShareAccessTests: XCTestCase {
         )
         XCTAssertNil(DriveFolderLink.sharingURL(folderID: "not an id"))
     }
-
-    // MARK: - files.get → bind
 
     func testProbeKeepsWaitingWhenTheFolderIsNotSharedYet() {
         XCTAssertEqual(
@@ -220,8 +216,6 @@ final class ShareAccessTests: XCTestCase {
         XCTAssertNotEqual(BoundFolderBrowse.rootTitle, DriveRoot.myDrive.title)
         XCTAssertNotEqual(BoundFolderBrowse.rootTitle, DriveRoot.sharedDrives.title)
     }
-
-    // MARK: - Mint request
 
     func testMintRequestSendsIDTokenAsBearerAndBody() throws {
         let idToken = "header.payload.sig"

@@ -7,8 +7,6 @@ enum LicenseClient {
         let shareSession: ShareMintClient.Session?
     }
 
-    /// Returns whether the buyer email has a paid license, and optionally a
-    /// share-access session minted by the same endpoint.
     static func check(email: String) async throws -> CheckResult {
         let url = AppConfig.licenseCheckURL
         var request = URLRequest(url: url)
@@ -31,7 +29,6 @@ enum LicenseClient {
         return CheckResult(allowed: allowed, shareSession: share)
     }
 
-    /// Returns true when the email has a paid license.
     static func hasLicense(email: String) async throws -> Bool {
         try await check(email: email).allowed
     }

@@ -87,11 +87,8 @@ enum AppConfig {
         return URL(string: "https://usedriveflow.app/api/license/check")!
     }
 
-    /// Production share-session mint endpoint (`POST`, Bearer Google ID token).
     static let productionShareMintURL = URL(string: "https://usedriveflow.app/api/drive/session")!
 
-    /// Share-session mint endpoint.
-    ///
     /// Release builds default to `productionShareMintURL`. Debug builds leave it
     /// unset so a local service-account key or env token can be used.
     /// `DRIVEFLOW_SHARE_MINT_URL` overrides both.
@@ -121,7 +118,6 @@ enum AppConfig {
         return productionShareMintURL
     }
 
-    /// Public share-target email override for display when minting from an env token.
     static var configuredShareEmail: String? {
         let value = ProcessInfo.processInfo.environment["DRIVEFLOW_SHARE_EMAIL"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
