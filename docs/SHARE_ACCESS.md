@@ -103,6 +103,7 @@ License email is always the **buyer** Google email — never the share-target in
 3. After either of those actions (in either order with the paste), the app polls `files.get` every few seconds with the SA token:
    `GET https://www.googleapis.com/drive/v3/files/<id>?fields=id,name,mimeType,shortcutDetails(targetId,targetMimeType)&supportsAllDrives=true`
    - `404` / `403` → keep waiting
+   - `401` → mint once; if Drive rejects that token too, return to sign-in
    - folder → bind the pasted ID and enter the browser
    - shortcut to a folder → bind the **target** folder ID (children are listed on the target, not the shortcut)
    - any other readable file → stop and say it isn’t a folder

@@ -46,6 +46,7 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         lastError = nil
         self.buyerEmail = buyerEmail
         reloadBoundFoldersFromStore()
+        restoreCachedShareEmail(for: buyerEmail)
 
         do {
             try await refreshShareSession(buyerEmail: buyerEmail)
@@ -69,6 +70,7 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
     func applyPrefetchedSession(_ session: ShareMintClient.Session, buyerEmail: String) async {
         self.buyerEmail = buyerEmail
         reloadBoundFoldersFromStore()
+        restoreCachedShareEmail(for: buyerEmail)
         do {
             try persist(session: session, buyerEmail: buyerEmail)
             shareEmail = session.shareEmail
@@ -85,15 +87,16 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
             return
         }
         let serial = refreshSerial
+        // The mint task outlives a cancelled waiter. Sign-out cancels `refreshTask` itself.
         let task = Task { @MainActor in
+            defer {
+                if self.refreshSerial == serial {
+                    self.refreshTask = nil
+                }
+            }
             try await self.performRefresh(buyerEmail: buyerEmail, epochAtStart: started)
         }
         refreshTask = task
-        defer {
-            if refreshSerial == serial {
-                refreshTask = nil
-            }
-        }
         try await awaitRefresh(task, started: started)
     }
 
@@ -130,6 +133,11 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
             }
             throw surfaced
         }
+    }
+
+    nonisolated static func surfacingTokenFailure(_ error: Error) -> AppError {
+        if let error = error as? AppError { return error }
+        return .network(error.localizedDescription)
     }
 
     nonisolated static func surfacing(_ error: AppError, buyerEmail: String) -> AppError {
@@ -229,6 +237,18 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         authenticationFailure = nil
     }
 
+    func noteUnrecoverableDriveAuth() {
+        guard authenticationFailure == nil else { return }
+        authenticationFailure = .tokenExpired
+    }
+
+    func refreshAfterUnauthorized() async throws {
+        guard let buyerEmail else {
+            throw AppError.tokenExpired
+        }
+        try await refreshShareSession(buyerEmail: buyerEmail)
+    }
+
     func validAccessToken() async throws -> String {
         if let expiryString = try CredentialStore.get(account: expiryAccount),
            let expiry = TimeInterval(expiryString),
@@ -319,7 +339,23 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
     private func pollForFolderAccess(serial: Int) async {
         while !Task.isCancelled, pollSerial == serial {
             guard let folderID = onboarding.pollTargetID else { return }
-            let probe = await probeFolder(id: folderID)
+            let probe: FolderProbe
+            do {
+                probe = try await probeFolder(id: folderID)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, pollSerial == serial, buyerEmail != nil else { return }
+                let failure = Self.surfacingTokenFailure(error)
+                lastError = failure
+                if failure.requiresSignInAgain {
+                    noteUnrecoverableDriveAuth()
+                } else {
+                    mutateOnboarding { $0.cancelWaiting() }
+                }
+                stopPolling()
+                return
+            }
             guard !Task.isCancelled, pollSerial == serial else { return }
             guard onboarding.pollTargetID == folderID else { continue }
 
@@ -331,11 +367,16 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
             case .pollAgain:
                 unauthorizedRetry.clear()
             case .refreshToken:
-                if unauthorizedRetry.shouldRefresh {
+                switch unauthorizedRetry.followUp {
+                case .refresh:
                     unauthorizedRetry.markRefreshed()
                     if await refreshTokenForPoll() == false {
                         return
                     }
+                case .sessionExpired:
+                    noteUnrecoverableDriveAuth()
+                    stopPolling()
+                    return
                 }
             case .bind(let id, let name):
                 guard buyerEmail != nil, pollSerial == serial else { return }
@@ -352,6 +393,28 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
                 return
             }
         }
+    }
+
+    private func restoreCachedShareEmail(for buyerEmail: String) {
+        let storedBuyer: String?
+        do {
+            storedBuyer = try CredentialStore.get(account: buyerEmailAccount)
+        } catch {
+            return
+        }
+        guard let storedBuyer,
+              !storedBuyer.isEmpty,
+              storedBuyer.compare(buyerEmail, options: .caseInsensitive) == .orderedSame
+        else { return }
+        let cached: String?
+        do {
+            cached = try CredentialStore.get(account: shareEmailAccount)
+        } catch {
+            return
+        }
+        let trimmed = cached?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return }
+        shareEmail = trimmed
     }
 
     private func applyProbe(_ probe: FolderProbe) -> ShareBindAction {
@@ -371,7 +434,11 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         } catch let error as AppError {
             guard self.buyerEmail != nil else { return false }
             lastError = error
-            mutateOnboarding { $0.cancelWaiting() }
+            if error.requiresSignInAgain {
+                noteUnrecoverableDriveAuth()
+            } else {
+                mutateOnboarding { $0.cancelWaiting() }
+            }
             stopPolling()
             return false
         } catch {
@@ -397,9 +464,16 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
         stopPolling()
     }
 
-    private func probeFolder(id: FolderID) async -> FolderProbe {
+    private func probeFolder(id: FolderID) async throws -> FolderProbe {
+        let token: String
         do {
-            let token = try await validAccessToken()
+            token = try await validAccessToken()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw Self.surfacingTokenFailure(error)
+        }
+        do {
             guard let url = filesGetURL(folderID: id) else { return .notReadableYet }
             var request = URLRequest(url: url)
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -407,6 +481,8 @@ final class DriveAccessSession: ObservableObject, AccessTokenProviding {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             return DriveFolderAccess.interpret(statusCode: status, body: json, pastedID: id)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             return .notReadableYet
         }

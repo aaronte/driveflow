@@ -82,6 +82,9 @@ final class DriveBrowserModel: ObservableObject {
                 }
             } catch is CancellationError {
                 return
+            } catch let error as AppError where error.requiresSignInAgain {
+                driveAccess?.noteUnrecoverableDriveAuth()
+                return
             } catch {
                 // Keep the stored name until Drive answers.
             }
@@ -120,6 +123,9 @@ final class DriveBrowserModel: ObservableObject {
         } catch let error as AppError {
             lastError = error
             items = []
+            if error.requiresSignInAgain {
+                driveAccess?.noteUnrecoverableDriveAuth()
+            }
         } catch {
             lastError = .driveAPI(error.localizedDescription)
             items = []
@@ -138,6 +144,8 @@ final class DriveBrowserModel: ObservableObject {
             )
             items.append(contentsOf: result.items)
             self.nextPageToken = result.nextPageToken
+        } catch let error as AppError where error.requiresSignInAgain {
+            driveAccess?.noteUnrecoverableDriveAuth()
         } catch {
             // Soft-fail pagination
         }
@@ -210,6 +218,9 @@ final class DriveBrowserModel: ObservableObject {
                 return
             } catch let error as AppError {
                 lastError = error
+                if error.requiresSignInAgain {
+                    driveAccess?.noteUnrecoverableDriveAuth()
+                }
             } catch {
                 lastError = .driveAPI(error.localizedDescription)
             }

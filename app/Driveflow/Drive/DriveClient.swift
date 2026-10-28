@@ -167,18 +167,30 @@ actor DriveClient {
     }
 
     private func getJSON(url: URL) async throws -> [String: Any] {
-        let token = try await tokenProvider.validAccessToken()
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw AppError.network("No response from Drive.")
+        var refreshed = false
+        while true {
+            let token = try await tokenProvider.validAccessToken()
+            var request = URLRequest(url: url)
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw AppError.network("No response from Drive.")
+            }
+            if http.statusCode == 401 {
+                if refreshed {
+                    throw AppError.tokenExpired
+                }
+                refreshed = true
+                try await tokenProvider.refreshAfterUnauthorized()
+                continue
+            }
+            return try Self.decodeDriveJSON(data: data, statusCode: http.statusCode)
         }
-        if http.statusCode == 401 {
-            throw AppError.tokenExpired
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+    }
+
+    private static func decodeDriveJSON(data: Data, statusCode: Int) throws -> [String: Any] {
+        guard (200..<300).contains(statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? "HTTP \(statusCode)"
             throw AppError.driveAPI(body)
         }
         return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]

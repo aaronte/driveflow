@@ -390,10 +390,13 @@ final class ShareAccessTests: XCTestCase {
     func testUnauthorizedStreakRefreshesOnce() {
         var retry = UnauthorizedRetry()
         XCTAssertTrue(retry.shouldRefresh)
+        XCTAssertEqual(retry.followUp, .refresh)
         retry.markRefreshed()
         XCTAssertFalse(retry.shouldRefresh)
+        XCTAssertEqual(retry.followUp, .sessionExpired)
         retry.clear()
         XCTAssertTrue(retry.shouldRefresh)
+        XCTAssertEqual(retry.followUp, .refresh)
     }
 
     func testBindingTheSameFolderTwiceKeepsOneRecord() {

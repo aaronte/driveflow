@@ -20,12 +20,21 @@ enum ShareLinkRejection: Equatable {
     case notAFolder
 }
 
-/// One files.get 401 refreshes the service-account token. Further 401s in that
-/// streak wait, so a dead token cannot mint in a loop. A later 404 clears it.
+/// One files.get 401 refreshes the service-account token. A second 401 in that
+/// streak ends the session instead of minting again. A later 404 clears it.
 struct UnauthorizedRetry: Equatable {
     private(set) var refreshedDuringStreak = false
 
     var shouldRefresh: Bool { !refreshedDuringStreak }
+
+    enum FollowUp: Equatable {
+        case refresh
+        case sessionExpired
+    }
+
+    var followUp: FollowUp {
+        shouldRefresh ? .refresh : .sessionExpired
+    }
 
     mutating func markRefreshed() {
         refreshedDuringStreak = true
